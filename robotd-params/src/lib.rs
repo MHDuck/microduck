@@ -434,7 +434,7 @@ impl Default for AudioParams {
     fn default() -> Self {
         Self {
             enabled: true,
-            device: "plughw:aic3104".to_owned(),
+            device: "plughw:CARD=microducki2s3,DEV=0".to_owned(),
             bank: PathBuf::from("/var/lib/robot/sounds"),
             greet: true,
             pet_detect: None,
@@ -926,6 +926,7 @@ impl Driver {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Imu {
+    pub driver: ImuDriver,
     /// The i2c-dev device for the IMU bus. `/dev/i2c-imu` is the udev alias for i2c4.
     pub bus: PathBuf,
     /// The chip's 7-bit I²C address. The LSM6DSV16X straps 0x6A or 0x6B.
@@ -984,17 +985,26 @@ pub struct UpdateGate {
 impl Default for Bus {
     fn default() -> Self {
         Self {
-            port: "/dev/ttyS2".into(),
+            port: "/dev/ttyS4".into(),
             driver: Driver::default(),
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImuDriver {
+    Lsm6dsv16x,
+    #[default]
+    Bno085,
+}
+
 impl Default for Imu {
     fn default() -> Self {
         Self {
-            bus: PathBuf::from("/dev/i2c-imu"),
-            address: 0x6A,
+            driver: ImuDriver::default(),
+            bus: PathBuf::from("/dev/i2c-3"),
+            address: 0x4A,
         }
     }
 }

@@ -39,13 +39,20 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
+[ ! -f "$HOME/.cargo/env" ] || . "$HOME/.cargo/env"
+if [ -f "$HOME/.local/share/duck-build/bin/activate" ]; then
+    . "$HOME/.local/share/duck-build/bin/activate"
+    export CARGO_ZIGBUILD_PYTHON_PATH="$VIRTUAL_ENV/bin/python"
+fi
+
 # Where the artifact lands on the board. Empty here and resolved after the board is known,
 # because the default is a path on *that* machine — see the block below the argument parsing.
 REMOTE_DIR="${DUCK_SIDELOAD_DIR:-}"
 
 # The secret half of `team.dev`, the same key `dev.yml` signs branch builds with. Named apart
 # from `DUCK_DEV_KEY`, which the provisioning scripts use for the *public* half.
-KEY="${DUCK_DEV_SECRET_KEY:-$HOME/.duck-keys/team.dev.key}"
+KEY="${DUCK_DEV_SECRET_KEY:-$HOME/.duck-keys/local.dev.key}"
+PACKAGE_ONLY=no
 
 BOOTSTRAP=no
 DRY_RUN=no
@@ -56,6 +63,7 @@ ROBOT=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --package-only) PACKAGE_ONLY=yes ;;
         --bootstrap) BOOTSTRAP=yes ;;
         --dry-run) DRY_RUN=yes ;;
         --docker) DOCKER=yes ;;
@@ -73,6 +81,11 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
+if [ "$PACKAGE_ONLY" = yes ]; then
+    BOARD=local
+    REMOTE_DIR=unused
+fi
 
 # ── which board, and why a name beats an address ───────────────────────────────────────
 #
@@ -240,6 +253,11 @@ elif ! docker version >/dev/null 2>&1; then
 fi
 
 if [ ! -f "$KEY" ]; then
+    if [ -z "${DUCK_DEV_SECRET_KEY:-}" ] && [ ! -f "$HOME/.duck-keys/local.dev.pub" ]; then
+        cargo run --locked -p xtask -- keygen --kind dev --name local --out "$HOME/.duck-keys"
+    fi
+fi
+if [ ! -f "$KEY" ]; then
     echo "no dev signing key at $KEY" >&2
     echo "The board verifies this artifact like any release, so it has to be signed." >&2
     echo "Get team.dev.key from a team member, or set DUCK_DEV_SECRET_KEY." >&2
@@ -274,8 +292,8 @@ if [ "$DOCKER" = no ]; then
     eval "$sysroot_env"
 fi
 
-SHA="$(git rev-parse HEAD)"
-SHA7="$(git rev-parse --short=7 HEAD)"
+SHA="$(git rev-parse --verify HEAD 2>/dev/null || printf uncommitted)"
+SHA7="$(git rev-parse --short=7 --verify HEAD 2>/dev/null || printf uncommitted)"
 # Read from `cargo metadata` rather than parsed out of Cargo.toml, the same way `dev.yml`
 # derives it: the value lives in `[workspace.package]` and the members inherit it, so grepping
 # a member's manifest finds `version.workspace = true` and grepping the root finds a line that
@@ -410,6 +428,11 @@ cargo run -p xtask -- package \
 
 echo "==> signing with $KEY"
 cargo run -p xtask -- sign --dir dist --key "$KEY"
+
+if [ "$PACKAGE_ONLY" = yes ]; then
+    echo "==> signed local release: $PWD/dist"
+    exit 0
+fi
 
 # Replaced rather than added to: a directory holding two builds makes "the newest one here"
 # ambiguous to read, and nothing on the board needs yesterday's push.

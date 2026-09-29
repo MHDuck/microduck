@@ -30,8 +30,7 @@
 #   --forget-host-key drop this host's key from known_hosts first. Reflashing the card
 #                     regenerates the board's host keys, so the same address then presents a
 #                     different one and ssh refuses outright — see `probe`.
-#   --local           send this clone's scripts/provision.sh instead of having the board fetch
-#                     it. What makes testing an unpushed branch possible.
+#   --local           build and send this clone's signed release, scripts and configuration.
 #   --no-dev-key      do not install the team dev key, for a board that should only take
 #                     releases. The default is to send this clone's
 #                     deploy/dev-key/team.dev.pub.
@@ -595,7 +594,17 @@ ${_probe}" ;;
     esac
 fi
 
-if [ -z "${DUCK_TOKEN:-}" ]; then
+if [ -n "$USE_LOCAL" ]; then
+    [ -z "$REF" ] || die "--local uses this checkout; do not combine it with --ref"
+    [ -z "$NO_DEV_KEY" ] || die "--local requires the local development public key"
+    sh "$(dirname "$0")/dev-push.sh" --package-only
+    if [ "$DEV_KEY" = "$DEV_KEY_DEFAULT" ]; then
+        DEV_KEY="${DUCK_DEV_SECRET_KEY:-$HOME/.duck-keys/local.dev.key}"
+        DEV_KEY="${DEV_KEY%.key}.pub"
+    fi
+fi
+
+if [ -z "$USE_LOCAL" ] && [ -z "${DUCK_TOKEN:-}" ]; then
     warn "DUCK_TOKEN is not set. While the repository is private every fetch on the board
   needs it, and GitHub answers 404 rather than 401, so it will look like a wrong URL.
   Continuing in case the repository is public by now."
@@ -664,16 +673,19 @@ if [ -n "$DEV_KEY" ]; then
         || die "could not copy ${DEV_KEY} to ${HOST}"
 fi
 
-# The local copy is the whole point of `--local`: it provisions a board with a `provision.sh`
-# that has not been pushed anywhere, which is the only way to test a change to it without
-# merging first. Everything the script then fetches still comes from --ref, so a full test of a
-# branch is `--local --ref that-branch`.
+# Keep the local payload on the board across its reboot.
 if [ -n "$USE_LOCAL" ]; then
     _local="$(dirname "$0")/provision.sh"
     [ -f "$_local" ] || die "--local needs ${_local}, and it is not there.
   Run this from a clone, or drop --local and let the board fetch it from ${REF:-main}."
     say "sending this clone's provision.sh"
     scp -q "$_local" "$(scp_target /tmp/provision.sh)" || die "could not copy provision.sh"
+    _root="$(cd "$(dirname "$0")/.." && pwd)"
+    _remote_local="/var/lib/robot/provision-local-$(date +%s)-$$"
+    _archive="$(mktemp)"
+    tar -czf "$_archive" -C "$_root" scripts deploy dist staged/updaterd
+    scp -q "$_archive" "$(scp_target /tmp/microduck-local.tar.gz)" || die "could not copy local payload"
+    rm -f "$_archive"
 else
     _raw="https://raw.githubusercontent.com/pollen-robotics/microduck/${REF:-main}/scripts/provision.sh"
     say "having the board fetch provision.sh from ${REF:-main}"
@@ -698,6 +710,7 @@ _env="DUCK_TOKEN='${DUCK_TOKEN:-}'"
 [ -z "$PAUSE_BTD" ]  || _env="${_env} DUCK_PAUSE_BTD=1"
 [ -z "$NO_GSTREAMER" ] || _env="${_env} DUCK_GSTREAMER=0"
 [ -z "$NO_RKAIQ" ]     || _env="${_env} DUCK_RKAIQ=0"
+[ -z "$USE_LOCAL" ] || _env="${_env} DUCK_LOCAL_DIR='${_remote_local}'"
 
 # The name is a flag rather than one more `DUCK_*`, because on the board it goes no further than
 # `robotctl system set-name`. Single-quoted with any quote of its own escaped: a name is free text,
@@ -711,8 +724,12 @@ fi
 # `-t` so sudo can prompt for a password, and the exit status deliberately ignored: this
 # command ends by rebooting the machine it is running on, so ssh reporting a dropped connection
 # is the *expected* outcome. Whether it worked is decided below, by looking at the board.
+_stage=""
+if [ -n "$USE_LOCAL" ]; then
+    _stage="sudo install -d -m 755 '${_remote_local}' && sudo tar -xzf /tmp/microduck-local.tar.gz -C '${_remote_local}' && "
+fi
 ssh -t -o StrictHostKeyChecking=accept-new "$HOST" \
-    "sudo env ${_env} sh /tmp/provision.sh${_args}" || true
+    "${_stage}sudo env ${_env} sh /tmp/provision.sh${_args}" || true
 
 echo
 say "waiting for ${HOST} to come back (up to ${BOOT_TIMEOUT}s)"

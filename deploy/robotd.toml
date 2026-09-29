@@ -25,7 +25,7 @@ variant = "open_microduck"
 # Serial port the servos share. /dev/ttyS2 is the Radxa Zero 3W's wiring; a board wired
 # differently can also be overridden per-invocation with `robotd --port`, which is the dev
 # escape hatch rather than the thing to edit here.
-port = "/dev/ttyS2"
+port = "/dev/ttyS4"
 # Which driver the serial port speaks. Keep this in step with [platform].variant
 # (hd1910 for open_microduck, xl330 for microduck). robotd opens the variant's driver.
 driver = "hd1910"
@@ -38,8 +38,9 @@ driver = "hd1910"
 # there is a different device.
 # MicroDuck (variant = "microduck") ignores this section: the IMU is imu_to_dxl at
 # Dynamixel ID 200, fetched in the same sync_read as the XL330s.
-bus = "/dev/i2c-imu"
-address = 0x6A
+driver = "bno085"
+bus = "/dev/i2c-3"
+address = 0x4A
 
 # Every value below that is commented out shows the built-in default. LEAVE IT COMMENTED
 # unless this robot genuinely needs a different value: install.sh copies this file to
@@ -283,7 +284,7 @@ mode = "walk"
 
 # ALSA playback device — the TLV320AIC3104 codec that setup-board.sh brings up. The mic
 # worker captures from "<device>,0".
-# device = "plughw:aic3104"
+device = "plughw:CARD=microducki2s3,DEV=0"
 
 # Where the voice bank lives.
 # bank = "/var/lib/robot/sounds"

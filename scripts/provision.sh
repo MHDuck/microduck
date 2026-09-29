@@ -69,6 +69,8 @@ ENV_FORCE="${DUCK_FORCE_REINSTALL:-}"
 ENV_WEIRD_BLE="${DUCK_WEIRD_BLE:-}"
 ENV_GSTREAMER="${DUCK_GSTREAMER:-}"
 ENV_RKAIQ="${DUCK_RKAIQ:-}"
+ENV_LOCAL_DIR="${DUCK_LOCAL_DIR:-}"
+export DUCK_LOCAL_DIR="${ENV_LOCAL_DIR}"
 
 REPO="${ENV_REPO:-pollen-robotics/microduck}"
 REF="${ENV_REF:-main}"
@@ -190,6 +192,10 @@ die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 # command for a human, this one runs it.
 fetch() {
     # $1 script name, $2 destination
+    if [ -n "${DUCK_LOCAL_DIR:-}" ]; then
+        cp "${DUCK_LOCAL_DIR}/scripts/$1" "$2"
+        return
+    fi
     if [ -n "$TOKEN" ]; then
         curl -fsSL -H "Authorization: Bearer ${TOKEN}" -o "$2" "${RAW}/$1" && return 0
     else
@@ -273,6 +279,8 @@ save_state() {
         kv DUCK_FORCE_REINSTALL "$FORCE_REINSTALL"
         kv DUCK_WEIRD_BLE "$WEIRD_BLE"
         kv DUCK_GSTREAMER "$GSTREAMER"
+        kv DUCK_RKAIQ "$RKAIQ"
+        kv DUCK_LOCAL_DIR "${DUCK_LOCAL_DIR:-}"
         kv DUCK_ASKED_REF "$ASKED_REF"
         # `PROVISION_*` for the two that are not environment knobs, so sourcing this file cannot
         # set something an operator could also have exported.
@@ -297,6 +305,8 @@ load_state() {
     FORCE_REINSTALL="${ENV_FORCE:-${DUCK_FORCE_REINSTALL:-}}"
     WEIRD_BLE="${ENV_WEIRD_BLE:-${DUCK_WEIRD_BLE:-}}"
     GSTREAMER="${ENV_GSTREAMER:-${DUCK_GSTREAMER:-1}}"
+    RKAIQ="${ENV_RKAIQ:-${DUCK_RKAIQ:-1}}"
+    export DUCK_LOCAL_DIR="${ENV_LOCAL_DIR:-${DUCK_LOCAL_DIR:-}}"
     ASKED_REF="${ENV_REF:-${DUCK_ASKED_REF:-}}"
     # No `ENV_` mirror for the name, unlike its neighbours. Theirs exist because sourcing this file
     # sets the very `DUCK_*` variables the operator's environment did, so the typed value has to be
@@ -488,6 +498,9 @@ EOF
 
 phase_one() {
     say "phase 1: board and network"
+    if [ -n "${DUCK_LOCAL_DIR:-}" ] && [ -L /opt/robot/daemon/current ] && [ -z "$FORCE_REINSTALL" ]; then
+        die "a release is already installed; use scripts/dev-push.sh for updates"
+    fi
     # Before anything is changed: a mistyped dev-key path should cost nothing at all, and this
     # is the only argument that can be wrong in a way nothing later would catch.
     keep_dev_key
@@ -531,7 +544,7 @@ phase_two() {
 
     # The persisted copies, which is what those scripts leave behind for exactly this moment.
     # Re-fetching would work and would also be a second chance for the network to fail.
-    if [ -x "$SETUP_SELF" ]; then
+    if [ -z "${DUCK_LOCAL_DIR:-}" ] && [ -x "$SETUP_SELF" ]; then
         DUCK_WEIRD_BLE="$WEIRD_BLE" "$SETUP_SELF"
     else
         tmp=/tmp/setup-board.sh
@@ -640,6 +653,7 @@ phase_two() {
 # branch build that fails it is rolled back to stable and the apply reports that honestly — leaving
 # exactly the silent board this exists to prevent.
 apply_asked_ref() {
+    [ -z "${DUCK_LOCAL_DIR:-}" ] || return 0
     [ -n "$ASKED_REF" ] || return 0
 
     say "installing the daemon that ${ASKED_REF} last built"

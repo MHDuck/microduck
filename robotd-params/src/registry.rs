@@ -90,12 +90,13 @@ pub const REGISTRY: &[Entry] = &[
         "Which servo driver: hd1910 (Feetech, default) or xl330 (Dynamixel fallback)",
     ),
     // ── [imu] ────────────────────────────────────────────────────────────────
+    entry("imu.driver", Kind::Choice(&["lsm6dsv16x", "bno085"]), "IMU driver"),
     entry(
         "imu.bus",
         Kind::Text,
-        "I²C bus device for the IMU (/dev/i2c-imu)",
+        "I²C bus device for the IMU (/dev/i2c-3)",
     ),
-    entry("imu.address", Kind::Integer, "IMU I²C address (0x6A)"),
+    entry("imu.address", Kind::Integer, "IMU I²C address (0x4A)"),
     // ── [control] ────────────────────────────────────────────────────────────
     entry("control.hz", Kind::Integer, "Control loop rate"),
     entry(

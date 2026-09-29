@@ -18,6 +18,8 @@
 //! publishes and never calls into the loop — a wedged loop reports itself unhealthy rather
 //! than hanging the caller.
 
+#[cfg(target_os = "linux")]
+mod bno085;
 mod chorale;
 mod control;
 mod intents;
@@ -1059,6 +1061,15 @@ fn imu_for_bus(io: &BusIo, params: &Params) -> ImuIoBox {
 fn open_imu(cfg: &params::Imu) -> ImuIoBox {
     #[cfg(target_os = "linux")]
     {
+        if cfg.driver == robotd_params::ImuDriver::Bno085 {
+            return match bno085::Bno085::open(cfg) {
+                Ok(imu) => ImuIoBox(Box::new(imu)),
+                Err(error) => {
+                    tracing::error!(%error, "cannot open BNO085");
+                    ImuIoBox(Box::new(not_ready_imu()))
+                }
+            };
+        }
         if let Some(imu) = try_open_imu(&cfg.bus, cfg.address) {
             return imu;
         }

@@ -155,6 +155,13 @@ die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 fetch() {
     # $1 url, $2 destination
+    if [ -n "${DUCK_LOCAL_DIR:-}" ]; then
+        case "$1" in
+            */deploy/*) cp "${DUCK_LOCAL_DIR}/deploy/${1#*/deploy/}" "$2" ;;
+            *) die "local install cannot fetch $1" ;;
+        esac
+        return
+    fi
     if [ -n "$TOKEN" ]; then
         curl -fsSL -H "Authorization: Bearer ${TOKEN}" -o "$2" "$1"
     else
@@ -304,6 +311,48 @@ install_config() {
         fetch "${config_raw}/deploy/robotd.toml" "${CONFIG_DIR}/robotd.toml"
         chmod 644 "${CONFIG_DIR}/robotd.toml"
     fi
+    if [ -n "${DUCK_LOCAL_DIR:-}" ]; then
+        configure_local_hardware
+    fi
+}
+
+configure_local_hardware() {
+    python3 - "$CONFIG_DIR" "$DUCK_LOCAL_DIR" <<'PY'
+import json, pathlib, re, sys, tomllib
+config, local = map(pathlib.Path, sys.argv[1:])
+path = config / 'robotd.toml'
+text = path.read_text()
+defaults = tomllib.loads((local / 'deploy/robotd.toml').read_text())
+for section, keys in {'bus': ['port', 'driver'], 'imu': ['driver', 'bus', 'address'], 'audio': ['device']}.items():
+    pattern = rf'(?ms)^\[{section}\][^\n]*\n.*?(?=^\[|\Z)'
+    match = re.search(pattern, text)
+    block = match.group() if match else f'\n[{section}]\n'
+    for key in keys:
+        value = defaults[section][key]
+        value = f'"{value}"' if isinstance(value, str) else str(value)
+        line = f'{key} = {value}'
+        field = rf'(?m)^{key}\s*=.*$'
+        block = re.sub(field, lambda _: line, block) if re.search(field, block) else block.rstrip() + '\n' + line + '\n'
+    text = text[:match.start()] + block + text[match.end():] if match else text.rstrip() + block
+tomllib.loads(text)
+if text != path.read_text():
+    backup = path.with_suffix('.toml.before-feetech')
+    if not backup.exists():
+        backup.write_bytes(path.read_bytes())
+    path.write_text(text)
+path = config / 'updater.toml'
+text = path.read_text()
+backup = path.with_suffix('.toml.before-local')
+if not backup.exists():
+    backup.write_text(text)
+text = re.sub(r'(?m)^auto_apply\s*=.*$', 'auto_apply = "off"', text)
+source = '[component.daemon.source]\ntype = "local_dir"\npath = ' + json.dumps(str(local / 'dist')) + '\n\n'
+text, count = re.subn(r'(?ms)^\[component\.daemon\.source\][^\n]*\n.*?(?=^\[|\Z)', lambda _: source, text)
+if count != 1:
+    raise SystemExit('expected one component.daemon.source section')
+tomllib.loads(text)
+path.write_text(text)
+PY
 }
 
 # Land the first release through the real engine. `--config` is the config installed
@@ -319,6 +368,12 @@ install_config() {
 # `source/github.rs`); this script was the one place that had not caught up, because until a
 # release was promoted there was nothing here to exercise.
 resolve_bootstrap_asset() {
+    if [ -n "${DUCK_LOCAL_DIR:-}" ]; then
+        [ -f "${DUCK_LOCAL_DIR}/staged/updaterd" ] || die "local updaterd is missing"
+        [ -f "${DUCK_LOCAL_DIR}/dist/manifest.json" ] || die "local signed manifest is missing"
+        BOOTSTRAP_URL=local
+        return 0
+    fi
     # Idempotent: `main` resolves early so `install_config` knows the tag, and
     # `bootstrap_first_release` still asks for itself so it stands alone. One API call either
     # way — and, more usefully, one answer, so the config and the binary cannot come from two
@@ -423,7 +478,9 @@ EOF
 
     say "fetching the bootstrap updaterd"
     resolve_bootstrap_asset
-    if ! fetch_asset "$BOOTSTRAP_URL" "${tmp}/updaterd"; then
+    if [ -n "${DUCK_LOCAL_DIR:-}" ]; then
+        cp "${DUCK_LOCAL_DIR}/staged/updaterd" "${tmp}/updaterd"
+    elif ! fetch_asset "$BOOTSTRAP_URL" "${tmp}/updaterd"; then
         die "cannot fetch ${BOOTSTRAP_URL}"
     fi
     chmod +x "${tmp}/updaterd"
@@ -443,9 +500,12 @@ EOF
         force_flag="--force"
     fi
 
-    # shellcheck disable=SC2086 # unquoted so an empty force_flag passes no argument at all
-    GITHUB_TOKEN="$TOKEN" "${tmp}/updaterd" install \
-        --config "${CONFIG_DIR}/updater.toml" $force_flag
+    set -- --config "${CONFIG_DIR}/updater.toml"
+    [ -z "$force_flag" ] || set -- "$@" "$force_flag"
+    if [ -n "${DUCK_LOCAL_DIR:-}" ]; then
+        set -- "$@" --from "${DUCK_LOCAL_DIR}/dist"
+    fi
+    GITHUB_TOKEN="$TOKEN" "${tmp}/updaterd" install "$@"
 
     if [ ! -L "${INSTALL_DIR}/current" ]; then
         die "the install reported success but nothing is live"
@@ -959,7 +1019,7 @@ EOF
 # the board, not to a daemon release. But installing a robot daemon onto a board with no bus
 # is worth saying out loud: the install will succeed, `robotd` will start, fail to open the
 # bus, and report unhealthy. That is honest behaviour, and an easy thing to stare past.
-MOTOR_PORT="${MOTOR_PORT:-/dev/ttyS2}"
+MOTOR_PORT="${MOTOR_PORT:-/dev/ttyS4}"
 
 check_board() {
     if [ -e "$MOTOR_PORT" ]; then
@@ -1019,6 +1079,9 @@ install_token_dropin() {
 
 main() {
     check_environment
+    if [ -n "${DUCK_LOCAL_DIR:-}" ] && [ -L "${INSTALL_DIR}/current" ] && [ -z "$FORCE_REINSTALL" ]; then
+        die "a release is already installed; use scripts/dev-push.sh for updates"
+    fi
     check_board
     wait_for_clock
     # Before install_config, which needs to know which release it is pairing a config with.

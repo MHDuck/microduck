@@ -37,7 +37,7 @@ ONNX_LIB_DIR=/usr/local/lib
 
 # The Dynamixel bus. Every servo and the imu_to_dxl board share it, so without this there
 # is no robot — just a daemon reporting that it cannot see one.
-MOTOR_PORT="${MOTOR_PORT:-/dev/ttyS2}"
+MOTOR_PORT="${MOTOR_PORT:-/dev/ttyS4}"
 
 ENV_TXT=/boot/armbianEnv.txt
 
@@ -427,7 +427,7 @@ free_motor_port() {
         fi
     fi
 
-    if [ -f "$ENV_TXT" ] && grep -Eq '^console=(both|serial)$' "$ENV_TXT"; then
+    if [ "$(kernel_console_tty)" = "$tty" ] && [ -f "$ENV_TXT" ] && grep -Eq '^console=(both|serial)$' "$ENV_TXT"; then
         say "taking the kernel console off the motor UART (console=display)"
         # Two plain substitutions rather than a BRE alternation, which differs between
         # sed dialects and would fail silently by matching nothing.
@@ -517,6 +517,10 @@ free_motor_port() {
 # Fetch a repository file (deploy/audio/...) into $2. The token, when given, rides along —
 # same reasoning as fetch_cmd, done rather than printed.
 fetch_repo_file() {
+    if [ -n "${DUCK_LOCAL_DIR:-}" ]; then
+        cp "${DUCK_LOCAL_DIR}/$1" "$2"
+        return
+    fi
     if [ -n "$TOKEN" ]; then
         curl -fsSL -H "Authorization: Bearer $TOKEN" "${RAW%/scripts}/$1" -o "$2"
     else
@@ -1122,24 +1126,76 @@ EOF
     fi
 }
 
+configure_feetech() {
+    [ -f "$ENV_TXT" ] || die "${ENV_TXT} is required"
+    grep -q '^fdtfile=rockchip/rk3566-radxa-zero3.dtb$' "$ENV_TXT" \
+        || die "this wiring requires rk3566-radxa-zero3.dtb"
+    ov_dir="/boot/dtb-$(uname -r)/rockchip/overlay"
+    [ -d "$ov_dir" ] || ov_dir=/boot/dtb/rockchip/overlay
+    for name in i2c3-m0 i2c4-m0 uart4-m1; do
+        [ -f "/boot/overlay-user/microduck-${name}.dtbo" ] || \
+            [ -f "${ov_dir}/rk3568-${name}.dtbo" ] || die "missing ${ov_dir}/rk3568-${name}.dtbo"
+    done
+    if ! command -v dtc >/dev/null 2>&1 || ! command -v aplay >/dev/null 2>&1 || ! command -v i2cdetect >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+        apt-get update
+        apt-get install -y --no-install-recommends device-tree-compiler alsa-utils i2c-tools python3
+    fi
+    [ -f "${ENV_TXT}.microduck.bak" ] || cp -p "$ENV_TXT" "${ENV_TXT}.microduck.bak"
+    mkdir -p /boot/overlay-user /etc/udev/rules.d /etc/modules-load.d
+    for name in i2c3-m0 i2c4-m0 uart4-m1; do
+        target="/boot/overlay-user/microduck-${name}.dtbo"
+        if [ ! -f "$target" ]; then
+            install -m 644 "${ov_dir}/rk3568-${name}.dtbo" "$target"
+            needs_reboot=1
+        fi
+    done
+    if [ ! -f /boot/overlay-user/microduck-i2s3-m0.dtbo ]; then
+        source="$(mktemp)"
+        fetch_repo_file deploy/overlays/microduck-i2s3-m0.dts "$source"
+        dtc -@ -I dts -O dtb -o /boot/overlay-user/microduck-i2s3-m0.dtbo "$source"
+        rm -f "$source"
+        needs_reboot=1
+    fi
+    user_overlays="$(sed -n 's/^user_overlays=//p' "$ENV_TXT")"
+    for name in microduck-i2c3-m0 microduck-i2c4-m0 microduck-uart4-m1 microduck-i2s3-m0; do
+        case " $user_overlays " in
+            *" $name "*) ;;
+            *) user_overlays="${user_overlays:+$user_overlays }$name"; needs_reboot=1 ;;
+        esac
+    done
+    if grep -q '^user_overlays=' "$ENV_TXT"; then
+        sed -i "s/^user_overlays=.*/user_overlays=$user_overlays/" "$ENV_TXT"
+    else
+        printf '\nuser_overlays=%s\n' "$user_overlays" >> "$ENV_TXT"
+    fi
+    printf 'i2c-dev\n' > /etc/modules-load.d/microduck-i2c.conf
+    modprobe i2c-dev
+    printf '%s\n' 'SUBSYSTEM=="i2c-dev", KERNEL=="i2c-3", SYMLINK+="i2c-imu"' > /etc/udev/rules.d/99-robot-i2c-imu.rules
+    printf '%s\n' 'SUBSYSTEM=="i2c-dev", KERNEL=="i2c-4", SYMLINK+="i2c-pihat"' > /etc/udev/rules.d/99-robot-i2c-pihat.rules
+    udevadm control --reload-rules
+    udevadm trigger --subsystem-match=i2c-dev
+    mkdir -p /etc/systemd/system/tofd.service.d
+    printf '%s\n' '[Service]' 'ExecStart=' 'ExecStart=/opt/robot/daemon/current/bin/tofd --bus /dev/i2c-4' \
+        > /etc/systemd/system/tofd.service.d/10-i2c4.conf
+    systemctl daemon-reload
+}
+
 main() {
     check_environment
     persist_self
-    configure_overlay
+    configure_feetech
     check_network
     free_motor_port
     configure_bluetooth
-    configure_audio
-    configure_tof
-    # After configure_audio, which is what installs the vendor kernel: the camera's MIPI-CSI
-    # capture driver lives only on that branch, and its overlay directory is the one to mirror
-    # into. `vendor_ver` is what configure_audio resolved it to, or empty.
-    configure_camera "${vendor_ver:-}"
-    # Same ordering reason as configure_camera: the i2c4-imu overlay must land in the vendor
-    # kernel's overlay dir, which configure_audio is what installs/makes available.
-    configure_imu "${vendor_ver:-}"
     install_onnxruntime
-    report
+    say "Feetech: UART4, BNO085 on I2C3, ToF on I2C4, microduck-i2s3 audio"
+    if [ "$needs_reboot" = 1 ]; then
+        say "boot configuration changed; reboot required"
+    else
+        for device in "$MOTOR_PORT" /dev/i2c-3 /dev/i2c-4; do
+            [ -e "$device" ] || die "missing ${device}; check the active overlays"
+        done
+    fi
 }
 
 # Called on the last line so a truncated download — the real failure mode of `curl | sh` —
