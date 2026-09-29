@@ -44,14 +44,9 @@ NET_CHECK_UNIT=/etc/systemd/system/robot-net-check.service
 # Where this script puts itself so it is still around after the reboot it asks for.
 SELF=/usr/local/sbin/robot-migrate-network
 
-# Where this script came from, for the commands it prints. Same override names as install.sh
-# and setup-board.sh, so a fork or a pinned tag is one decision for the whole bring-up.
-REPO="${DUCK_REPO:-pollen-robotics/microduck}"
-REF="${DUCK_REF:-main}"
-RAW="https://raw.githubusercontent.com/${REPO}/${REF}/scripts"
-# For a private repository. Only ever interpolated into printed commands, and by name rather
-# than by value: a bring-up log gets pasted into chat.
-TOKEN="${DUCK_TOKEN:-}"
+# Local checkout used for scripts and hardware configuration.
+DUCK_LOCAL_DIR="$(cd "${DUCK_LOCAL_DIR:-$(dirname "$0")/..}" && pwd)"
+export DUCK_LOCAL_DIR
 
 # Whether this run staged the cutover, which decides what the closing advice must warn about.
 cutover=0
@@ -60,25 +55,9 @@ say()  { printf '\033[1m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
-# These helpers are duplicated from setup-board.sh rather than sourced. Both scripts are
-# fetched and run standalone — `curl … | sh` cannot source a sibling — so sharing them would
-# cost a delivery mechanism to save twenty lines of shell.
-
-# The command that puts this script back on the board, as a string to print. Needed because a
-# piped invocation leaves no file to persist, and the reboot below clears /tmp — so the one
-# state where the operator has nothing is also the one that used to print a comment instead of
-# a command. Two forms, keyed on whether this run was given a token: a private repo 404s
-# without the header, and a public one sent an unset or stale token gets an auth failure
-# rather than the file.
+# Print a local copy command.
 fetch_cmd() {
-    # $1 script name
-    if [ -n "$TOKEN" ]; then
-        # shellcheck disable=SC2016  # $DUCK_TOKEN must stay literal.
-        printf 'curl -fsSL -H "Authorization: Bearer $DUCK_TOKEN" %s/%s -o /tmp/%s' \
-            "$RAW" "$1" "$1"
-    else
-        printf 'curl -fsSL %s/%s -o /tmp/%s' "$RAW" "$1" "$1"
-    fi
+    printf 'cp "%s/scripts/%s" "/tmp/%s"' "$DUCK_LOCAL_DIR" "$1" "$1"
 }
 
 # Write stdin to $1, and say whether that changed anything.

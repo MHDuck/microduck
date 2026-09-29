@@ -78,18 +78,9 @@ WEIRD_BLE_MARKER=/var/lib/robot/weird-ble
 # Where this script puts itself so it is still around after the reboot it asks for.
 SELF=/usr/local/sbin/robot-setup-board
 
-# Where the sibling scripts come from, for the commands this prints. Same override names as
-# `install.sh`, so a fork or a pinned tag is one decision for the whole bring-up rather than
-# per script. Nothing here is fetched by this script — see `fetch_cmd`.
-REPO="${DUCK_REPO:-pollen-robotics/microduck}"
-REF="${DUCK_REF:-main}"
-RAW="https://raw.githubusercontent.com/${REPO}/${REF}/scripts"
-
-# For a private repository: a token with read access to contents. Only ever interpolated into
-# the commands this prints, and by name (`$DUCK_TOKEN`) rather than by value — a bring-up log
-# gets pasted into chat, and a token that leaks that way cannot be rotated without touching
-# every board. What it decides is *which form* to print, not what to run.
-TOKEN="${DUCK_TOKEN:-}"
+# Local checkout used for scripts and hardware configuration.
+DUCK_LOCAL_DIR="$(cd "${DUCK_LOCAL_DIR:-$(dirname "$0")/..}" && pwd)"
+export DUCK_LOCAL_DIR
 
 # Wifi migration lives in its own script — see `check_network` for why. Named here so the
 # advice this prints and the thing it points at cannot drift apart.
@@ -125,28 +116,9 @@ say()  { printf '\033[1m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
-# The command that puts a sibling script on this board, as a string to *print*.
-#
-# This script downloads exactly one thing — the ONNX Runtime tarball, from a public
-# microsoft/onnxruntime release — so it never needs a token itself. Its siblings do, while
-# the repository is private, and every step of bring-up that told someone to fetch one
-# without a header sent them into a 404 that reads like a wrong URL.
-#
-# Two forms, keyed on whether this run was given a token, because the wrong one is worse than
-# no advice: a private repo not told to send one 404s, and a public one told to send an unset
-# or stale one gets an auth failure rather than the file. Printing the form that matches the
-# situation this script is actually in is the only version an operator can paste blind.
-#
-# `$DUCK_TOKEN` stays unexpanded so the printed line is safe to paste into a bug report.
+# Print a local copy command.
 fetch_cmd() {
-    # $1 script name, e.g. migrate-network.sh
-    if [ -n "$TOKEN" ]; then
-        # shellcheck disable=SC2016  # $DUCK_TOKEN must stay literal — see above.
-        printf 'curl -fsSL -H "Authorization: Bearer $DUCK_TOKEN" %s/%s -o /tmp/%s' \
-            "$RAW" "$1" "$1"
-    else
-        printf 'curl -fsSL %s/%s -o /tmp/%s' "$RAW" "$1" "$1"
-    fi
+    printf 'cp "%s/scripts/%s" "/tmp/%s"' "$DUCK_LOCAL_DIR" "$1" "$1"
 }
 
 # How to run the wifi migration *from where this board actually is*, as a string to print.
@@ -514,18 +486,8 @@ free_motor_port() {
 # The voice bank itself is NOT provisioned here — the release's postinstall renders it with
 # the `sounds` binary the release carries, seeded from the SoC serial.
 
-# Fetch a repository file (deploy/audio/...) into $2. The token, when given, rides along —
-# same reasoning as fetch_cmd, done rather than printed.
 fetch_repo_file() {
-    if [ -n "${DUCK_LOCAL_DIR:-}" ]; then
-        cp "${DUCK_LOCAL_DIR}/$1" "$2"
-        return
-    fi
-    if [ -n "$TOKEN" ]; then
-        curl -fsSL -H "Authorization: Bearer $TOKEN" "${RAW%/scripts}/$1" -o "$2"
-    else
-        curl -fsSL "${RAW%/scripts}/$1" -o "$2"
-    fi
+    cp "${DUCK_LOCAL_DIR}/$1" "$2"
 }
 
 # Add one word to armbianEnv's overlays= line, preserving order (the codec overlay must
@@ -1104,26 +1066,7 @@ EOF
     say "board ready — install the daemon next"
     echo
     printf '  %s\n' "$(fetch_cmd install.sh)"
-    if [ -n "$TOKEN" ]; then
-        # Literal, not expanded: this line gets pasted around, and the value must not.
-        # shellcheck disable=SC2016
-        printf '  %s\n' 'sudo DUCK_TOKEN="$DUCK_TOKEN" sh /tmp/install.sh'
-        cat <<'EOF'
-
-  Both halves need the token while the repository is private: raw.githubusercontent.com 404s
-  without the header, and sudo does not pass the variable through on its own. Once the
-  repository is public, drop the header and the prefix.
-EOF
-    else
-        echo "  sudo sh /tmp/install.sh"
-        cat <<'EOF'
-
-  If that 404s rather than downloading, the repository is private and needs a token — a 404
-  is what GitHub returns for a private path, so it looks like a wrong URL. Export DUCK_TOKEN
-  and re-run this script: it reprints these two lines with the header and the sudo prefix.
-  install.sh needs the token for the release assets as well, not only for the fetch.
-EOF
-    fi
+    printf '  sudo DUCK_LOCAL_DIR="%s" sh /tmp/install.sh\n' "$DUCK_LOCAL_DIR"
 }
 
 configure_feetech() {

@@ -2,82 +2,19 @@
 #
 # Install the robot daemon on a fresh board, from nothing.
 #
-#   curl -fsSL https://raw.githubusercontent.com/pollen-robotics/microduck/main/scripts/install.sh | sudo sh
+#   sudo DUCK_DEV_KEY=/path/to/local.dev.pub sh scripts/install.sh
 #
-# Target: 64-bit Debian userland on aarch64 — Armbian 26.2.x on the Radxa Zero 3, and
-# whatever else Debian 12/13 arm64 you point it at. Needs `curl` and coreutils and
-# nothing else: tar and zstd are linked into `updaterd`, so there is no package to
-# install first.
-#
-# Idempotent. Re-running it on an installed robot re-checks everything and changes
-# nothing, and it never overwrites /etc/robot/updater.toml.
-#
-# ── how it works ─────────────────────────────────────────────────────────────
-#
-# The circularity — "an update needs the updater, which arrives in an update" — is broken
-# by downloading one bare `updaterd` binary and running its `install` subcommand. That
-# runs the ordinary engine: signature verification, extraction, the atomic swap, the
-# journal entry. There is no bootstrap-specific install logic, so nothing here can drift
-# from how every later update behaves.
-#
-# Notably this script never parses a manifest. It hands `updaterd` the config and lets the
-# configured source resolve `latest`, because a shell script picking the version out of a
-# signed JSON document would be a second, weaker reader of that document.
-#
-# For the same reason only two files come from the repository over raw.githubusercontent:
-# the config and the public keys, both needed *before* anything can be verified. The unit
-# files and the journald drop-in are taken out of the installed release instead — the same
-# bytes a signature was checked against.
-#
-# ── chain of trust ───────────────────────────────────────────────────────────
-#
-#   1. TLS to raw.githubusercontent.com gets this script, the config and the public keys.
-#   2. TLS to github.com gets the bootstrap `updaterd`. It is NOT yet verified.
-#   3. That binary verifies the manifest and artifact against the keys from (1), and
-#      refuses to install anything they do not sign.
-#   4. Afterwards this script compares the bootstrap binary's sha256 against
-#      `current/bin/updaterd`, which came out of the verified artifact. Equal digests
-#      mean the binary from (2) was genuine after all. CI asserts the two are the same
-#      bytes, so a mismatch is a real finding, not a packaging quirk.
-#
-# The residual trust is GitHub itself, which is also where this script came from — step
-# (4) narrows it rather than removing it. An install that wants no such window should use
-# `updaterd install --from <dir>` against files carried in by hand.
+# Target: aarch64 Debian/Armbian with Python 3.11+ and systemd.
+# The local checkout supplies config, public keys, staged/updaterd and signed dist/.
+# updaterd verifies signatures and hashes before installing the release.
 
 set -eu
 
 # ── knobs ────────────────────────────────────────────────────────────────────
 
-# The repository releases are published from. Override for a fork or a test repo.
-REPO="${DUCK_REPO:-pollen-robotics/microduck}"
-
-# Branch the trusted keys are read from. Pin to a tag for a reproducible provisioning run.
-#
-# Deliberately *not* where the config comes from — see `CONFIG_REF` below. Keys and config age
-# differently: the key set only ever grows, so the newest is the safest, while a config field is
-# only understood by binaries from its own version onwards.
-ENV_REF="${DUCK_REF:-}"
-REF="${ENV_REF:-main}"
-
-# Where `updater.toml` and `robotd.toml` come from. Defaults to the tag of the release being
-# installed, and `DUCK_REF` deliberately does *not* change it.
-#
-# That looked wrong at first — surely naming a ref should name it for everything — and it is
-# not. `--ref my-branch` means "run my branch's scripts", which is how the provisioning scripts
-# get tested at all; it does not mean "hand the last stable binary a config from a branch it
-# predates". Making DUCK_REF govern this put the `allow_users` failure straight back, on the
-# very command an operator would use to test the fix for it.
-#
-# Set this only to test a config change together with a build that understands it.
-CONFIG_REF="${DUCK_CONFIG_REF:-}"
-
-# Set by `resolve_bootstrap_asset` to the tag of the release actually being installed, and used
-# by `install_config` when the operator did not name a ref. Empty until then.
-RELEASE_TAG=""
-
-# For a private repository: a token with read access to contents. Also used for the
-# release download, which needs auth on a private repo.
-TOKEN="${DUCK_TOKEN:-}"
+# Install scripts, config and signed artifacts from this checkout.
+DUCK_LOCAL_DIR="$(cd "${DUCK_LOCAL_DIR:-$(dirname "$0")/..}" && pwd)"
+export DUCK_LOCAL_DIR
 
 # Re-install a release onto a board that already has one, using the release's *own*
 # updaterd rather than the one installed.
@@ -101,7 +38,7 @@ FORCE_REINSTALL="${DUCK_FORCE_REINSTALL:-}"
 
 # Trust the team dev key on this board, so `robotctl update apply --ref <branch>` works.
 #
-#   sudo DUCK_TOKEN=... DUCK_DEV_KEY=/path/to/team.dev.pub sh install.sh
+#   sudo DUCK_DEV_KEY=/path/to/team.dev.pub sh install.sh
 #
 # Operator-supplied on purpose, and never fetched. `deploy/trusted_keys/README.md` is
 # explicit that `team.dev.pub` stays out of the repository: a robot that trusts it installs
@@ -112,7 +49,7 @@ DEV_KEY="${DUCK_DEV_KEY:-}"
 
 # Install everything and start nothing.
 #
-#   sudo DUCK_NO_START=1 DUCK_TOKEN=... sh install.sh
+#   sudo DUCK_NO_START=1 sh scripts/install.sh
 #
 # For separating a board-level fault from the daemons. It puts the release, the units, the users
 # and the groups in place and leaves every unit neither enabled nor started, so the board — and
@@ -124,13 +61,6 @@ DEV_KEY="${DUCK_DEV_KEY:-}"
 # stopping a daemon does not undo what it pushed to a subsystem — a `btd` that has set `Pairable`
 # and registered a default pairing agent leaves both behind when it dies.
 NO_START="${DUCK_NO_START:-}"
-
-RAW="https://raw.githubusercontent.com/${REPO}/${REF}"
-BOOTSTRAP_ASSET="updaterd-bootstrap-aarch64"
-
-# Set by `resolve_bootstrap_asset`. A global rather than a `$(...)` result so a failure can
-# `die` in the caller's shell instead of exiting a subshell and returning an empty string.
-BOOTSTRAP_URL=""
 
 # Set by `add_operator_to_group` when it added the operator to `robot` on this run, which means
 # their current shell still cannot reach the sockets. Read by `report`, so the closing
@@ -154,40 +84,14 @@ warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 fetch() {
-    # $1 url, $2 destination
-    if [ -n "${DUCK_LOCAL_DIR:-}" ]; then
-        case "$1" in
-            */deploy/*) cp "${DUCK_LOCAL_DIR}/deploy/${1#*/deploy/}" "$2" ;;
-            *) die "local install cannot fetch $1" ;;
-        esac
-        return
-    fi
-    if [ -n "$TOKEN" ]; then
-        curl -fsSL -H "Authorization: Bearer ${TOKEN}" -o "$2" "$1"
-    else
-        curl -fsSL -o "$2" "$1"
-    fi
-}
-
-# As `fetch`, but asking the release API for bytes rather than metadata.
-#
-# Without `Accept: application/octet-stream` that endpoint answers with the asset's JSON
-# description, which downloads perfectly and is not a binary.
-fetch_asset() {
-    # $1 url, $2 destination
-    if [ -n "$TOKEN" ]; then
-        curl -fsSL -H "Authorization: Bearer ${TOKEN}" \
-            -H "Accept: application/octet-stream" -o "$2" "$1"
-    else
-        curl -fsSL -H "Accept: application/octet-stream" -o "$2" "$1"
-    fi
+    cp "${DUCK_LOCAL_DIR}/$1" "$2"
 }
 
 # ── steps ────────────────────────────────────────────────────────────────────
 
 check_environment() {
     if [ "$(id -u)" != 0 ]; then
-        die "run as root (pipe to \`sudo sh\`, not \`sh\`)"
+        die "run as root with sudo sh scripts/install.sh"
     fi
 
     arch="$(uname -m)"
@@ -195,79 +99,18 @@ check_environment() {
         die "this installer publishes aarch64 binaries only, and this box is ${arch}"
     fi
 
-    for tool in curl systemctl sha256sum install; do
+    for tool in python3 systemctl sha256sum install; do
         if ! command -v "$tool" >/dev/null 2>&1; then
             die "${tool} is required"
         fi
     done
 
-    case "$REPO" in
-        ORG/*)
-            die "REPO is still the placeholder '${REPO}'.
-  Set DUCK_REPO, or substitute the real repository in scripts/install.sh and
-  deploy/updater.toml. A robot installed against a repository that does not exist
-  installs fine and then never finds another update."
-            ;;
-    esac
+
 }
 
-# The board has no battery-backed RTC. A clock reading 1970 fails TLS certificate-date
-# validation, and the error surfaces as an opaque handshake failure several steps later —
-# `updaterd`'s own preflight checks this for the same reason. Better to say so here.
-wait_for_clock() {
-    if [ ! -d /run/systemd/system ]; then
-        warn "not running under systemd; skipping the clock check"
-        return 0
-    fi
-    if timedatectl show --property=NTPSynchronized --value 2>/dev/null | grep -q yes; then
-        return 0
-    fi
-
-    say "waiting for the clock to sync (no RTC on this board; TLS needs a real date)"
-    i=0
-    while [ "$i" -lt 60 ]; do
-        if timedatectl show --property=NTPSynchronized --value 2>/dev/null | grep -q yes; then
-            return 0
-        fi
-        sleep 2
-        i=$((i + 1))
-    done
-    warn "the clock is still unsynchronised after 2 minutes; downloads may fail with a
-  certificate error. Check the network and systemd-timesyncd."
-}
-
-# The trust anchor and the one file an operator is expected to edit. Both come from the
-# repository over raw rather than from a release, because nothing can be verified until the keys
-# are here.
-#
-# But from *different refs*, and that distinction cost a board. The keys come from `REF`
-# (`main` by default) because the trusted set only ever grows, so the newest is the safest. The
-# config comes from the tag of the release actually being installed, because a config field is
-# only understood by binaries from its own version onwards — and pairing a config off `main`
-# with the last stable binary means every field added since that release breaks provisioning:
-#
-#   ERROR updaterd: invalid config error=TOML parse error at line 70
-#   unknown field `allow_users`, expected one of ...
-#
-# on a fresh board, from a clean checkout, with nothing an operator could have done wrong.
-# `deny_unknown_fields` is right — a typo in a robot's config should not be ignored — so the
-# fix belongs here, in what gets paired with what.
-#
-# An explicit `DUCK_REF` still wins for both: someone naming a ref is asking for that ref.
+# Install configuration and trusted public keys from the local checkout.
 install_config() {
     say "installing config and trusted keys"
-
-    # Where the *config* comes from, as opposed to the keys and the scripts.
-    if [ -n "$CONFIG_REF" ]; then
-        config_raw="https://raw.githubusercontent.com/${REPO}/${CONFIG_REF}"
-        warn "config from ${CONFIG_REF} because DUCK_CONFIG_REF asked for it. If that ref has
-  fields the release being installed does not know, updaterd will refuse to start."
-    elif [ -n "$RELEASE_TAG" ]; then
-        config_raw="https://raw.githubusercontent.com/${REPO}/${RELEASE_TAG}"
-        say "config from ${RELEASE_TAG}, matching the release being installed"
-    else
-        config_raw="$RAW"
-    fi
 
     mkdir -p "$KEYS_DIR"
     chmod 755 "$CONFIG_DIR" "$KEYS_DIR"
@@ -275,12 +118,12 @@ install_config() {
     for key in $KEYS; do
         # Only release-1 signs today; the spares are the rotation path and may not be
         # committed yet. A missing spare is not fatal, a missing release-1 is.
-        if fetch "${RAW}/deploy/trusted_keys/${key}" "${KEYS_DIR}/${key}"; then
+        if fetch "deploy/trusted_keys/${key}" "${KEYS_DIR}/${key}"; then
             chmod 644 "${KEYS_DIR}/${key}"
         else
             rm -f "${KEYS_DIR}/${key}"
             if [ "$key" = "release-1.pub" ]; then
-                die "cannot fetch ${key} from ${RAW}/deploy/trusted_keys/
+                die "cannot fetch ${key} from deploy/trusted_keys/
   Without it nothing can be verified, so there is nothing safe to install."
             fi
             warn "no ${key} published yet; skipping"
@@ -293,13 +136,8 @@ install_config() {
     if [ -f "${CONFIG_DIR}/updater.toml" ]; then
         warn "keeping the existing ${CONFIG_DIR}/updater.toml"
     else
-        fetch "${config_raw}/deploy/updater.toml" "${CONFIG_DIR}/updater.toml"
-        sed -i "s|\"ORG/duck-daemon\"|\"${REPO}\"|" "${CONFIG_DIR}/updater.toml"
+        fetch "deploy/updater.toml" "${CONFIG_DIR}/updater.toml"
         chmod 644 "${CONFIG_DIR}/updater.toml"
-    fi
-
-    if grep -q '"ORG/' "${CONFIG_DIR}/updater.toml"; then
-        die "${CONFIG_DIR}/updater.toml still names a placeholder repository"
     fi
 
     # Same rule: never overwritten, because it is where a bench robot's loop rate and
@@ -308,12 +146,10 @@ install_config() {
     if [ -f "${CONFIG_DIR}/robotd.toml" ]; then
         warn "keeping the existing ${CONFIG_DIR}/robotd.toml"
     else
-        fetch "${config_raw}/deploy/robotd.toml" "${CONFIG_DIR}/robotd.toml"
+        fetch "deploy/robotd.toml" "${CONFIG_DIR}/robotd.toml"
         chmod 644 "${CONFIG_DIR}/robotd.toml"
     fi
-    if [ -n "${DUCK_LOCAL_DIR:-}" ]; then
-        configure_local_hardware
-    fi
+    configure_local_hardware
 }
 
 configure_local_hardware() {
@@ -355,77 +191,10 @@ path.write_text(text)
 PY
 }
 
-# Land the first release through the real engine. `--config` is the config installed
-# above, so there is one statement of where keys live, where state lives and which channel
-# this robot tracks — rather than a copy of those values here that could disagree with the
-# one the daemon reads a minute later.
-# Find the bootstrap asset's API download URL on the latest stable release.
-#
-# **Not** `releases/latest/download/<asset>`. On a private repository that browser URL
-# returns 404 with or without a token — see `docs/design/updater-design.md` §6.1 — which is exactly
-# how this failed the first time it was run against a real board. The engine already
-# re-resolves its own download URLs through the release API (`resolve_download` in
-# `source/github.rs`); this script was the one place that had not caught up, because until a
-# release was promoted there was nothing here to exercise.
+# Check the local signed release before changing the board.
 resolve_bootstrap_asset() {
-    if [ -n "${DUCK_LOCAL_DIR:-}" ]; then
-        [ -f "${DUCK_LOCAL_DIR}/staged/updaterd" ] || die "local updaterd is missing"
-        [ -f "${DUCK_LOCAL_DIR}/dist/manifest.json" ] || die "local signed manifest is missing"
-        BOOTSTRAP_URL=local
-        return 0
-    fi
-    # Idempotent: `main` resolves early so `install_config` knows the tag, and
-    # `bootstrap_first_release` still asks for itself so it stands alone. One API call either
-    # way — and, more usefully, one answer, so the config and the binary cannot come from two
-    # different "latest" releases if one is published mid-install.
-    [ -z "$BOOTSTRAP_URL" ] || return 0
-
-    api="https://api.github.com/repos/${REPO}/releases/latest"
-    json="$(mktemp)"
-
-    if ! fetch "$api" "$json"; then
-        rm -f "$json"
-        die "cannot read ${api}
-  A stable, non-prerelease release must exist. If only staging releases have been
-  published, promote one first:  gh workflow run promote --field version=X.Y.Z"
-    fi
-
-    # Parsed with grep rather than jq: this script runs before anything is installed, and
-    # requiring a JSON parser on a freshly flashed board, in order to bootstrap the thing
-    # that installs software, would be the wrong way round.
-    #
-    # Whitespace is stripped *first*. The API pretty-prints, so `tr '{'` alone leaves the
-    # original newlines in place and grep still matches line by line — the line naming the
-    # asset does not carry its id, and the search silently finds nothing. Compacting makes
-    # one line per JSON object, and an asset's `id` and `name` both precede its nested
-    # `uploader` object, so the line naming the asset carries its id too.
-    json_compact="$(mktemp)"
-    tr -d ' \n' < "$json" | tr '{' '\n' > "$json_compact"
-    rm -f "$json"
-
-    id="$(
-        grep "\"name\":\"${BOOTSTRAP_ASSET}\"" "$json_compact" \
-        | grep -o '"id":[0-9][0-9]*' \
-        | grep -o '[0-9][0-9]*' \
-        | head -1
-    )"
-
-    if [ -z "$id" ]; then
-        rm -f "$json_compact"
-        die "the latest release has no asset named ${BOOTSTRAP_ASSET}.
-  A promoted release must carry it — release.yml attaches it, promote.yml copies it across."
-    fi
-
-    # The tag as well, because the config has to come from the same version as the binary.
-    # Same grep-not-jq reasoning as above.
-    RELEASE_TAG="$(
-        grep -o '"tag_name":"[^"]*"' "$json_compact" \
-        | head -1 \
-        | sed 's/.*"tag_name":"//; s/"$//'
-    )"
-    rm -f "$json_compact"
-
-    BOOTSTRAP_URL="https://api.github.com/repos/${REPO}/releases/assets/${id}"
+    [ -f "${DUCK_LOCAL_DIR}/staged/updaterd" ] || die "local updaterd is missing; run scripts/dev-push.sh --package-only first"
+    [ -f "${DUCK_LOCAL_DIR}/dist/manifest.json" ] || die "local signed manifest is missing"
 }
 
 # Stop the daemons so a forced re-install is operating on an inert board.
@@ -466,7 +235,7 @@ bootstrap_first_release() {
   re-install through the release's own updaterd. This stops the daemons and runs without a
   health gate, so it cannot auto-roll-back — signatures and hashes are still verified:
 
-    sudo DUCK_TOKEN="$DUCK_TOKEN" DUCK_FORCE_REINSTALL=1 sh /tmp/install.sh
+    sudo DUCK_FORCE_REINSTALL=1 sh /path/to/microduck/scripts/install.sh
 
 EOF
         return 0
@@ -476,22 +245,12 @@ EOF
     # shellcheck disable=SC2064 # expand $tmp now, deliberately
     trap "rm -rf '$tmp'" EXIT INT TERM
 
-    say "fetching the bootstrap updaterd"
+    say "copying the local bootstrap updaterd"
     resolve_bootstrap_asset
-    if [ -n "${DUCK_LOCAL_DIR:-}" ]; then
-        cp "${DUCK_LOCAL_DIR}/staged/updaterd" "${tmp}/updaterd"
-    elif ! fetch_asset "$BOOTSTRAP_URL" "${tmp}/updaterd"; then
-        die "cannot fetch ${BOOTSTRAP_URL}"
-    fi
+    cp "${DUCK_LOCAL_DIR}/staged/updaterd" "${tmp}/updaterd"
     chmod +x "${tmp}/updaterd"
 
     say "installing the first release (verifying signatures)"
-    # GITHUB_TOKEN, not DUCK_TOKEN: the engine reads that name, and it needs one for the
-    # same reason this script does — a private repo's API answers 404 to an unauthenticated
-    # caller. Exported only for this command, deliberately: nothing is written to disk, so
-    # the installed `updaterd` still has no credential and still cannot fetch a *later*
-    # update until someone adds the systemd drop-in by hand. That asymmetry is the point —
-    # provisioning is a person at a keyboard, an unattended update is not.
     # `--force` only on the forced path, where the daemons have just been stopped. updaterd
     # verifies that itself — it refuses --force while robotd still answers — so this cannot
     # quietly swap a release under a running robot.
@@ -502,10 +261,8 @@ EOF
 
     set -- --config "${CONFIG_DIR}/updater.toml"
     [ -z "$force_flag" ] || set -- "$@" "$force_flag"
-    if [ -n "${DUCK_LOCAL_DIR:-}" ]; then
-        set -- "$@" --from "${DUCK_LOCAL_DIR}/dist"
-    fi
-    GITHUB_TOKEN="$TOKEN" "${tmp}/updaterd" install "$@"
+    set -- "$@" --from "${DUCK_LOCAL_DIR}/dist"
+    "${tmp}/updaterd" install "$@"
 
     if [ ! -L "${INSTALL_DIR}/current" ]; then
         die "the install reported success but nothing is live"
@@ -1040,51 +797,12 @@ check_board() {
   unhealthy rather than pretending."
 }
 
-# Let `updaterd` fetch updates on a *developer's* board.
-#
-# Only when a token was supplied, and never on a customer robot: those install from a public
-# artifact repository and pass no token, so they never reach this path. A fleet-wide
-# credential baked into an image is one that leaks and cannot be rotated without reflashing —
-# the failure the tiered signing keys exist to avoid (deploy/README.md).
-#
-# Without this, `updaterd` is installed, running, and unable to fetch a single update — which
-# is most of what it is for.
-install_token_dropin() {
-    if [ -z "$TOKEN" ]; then
-        say "no token supplied; updaterd will not be able to fetch updates"
-        return 0
-    fi
-
-    dir=/etc/systemd/system/updaterd.service.d
-    mkdir -p "$dir"
-    # Restrictive umask before the write, not chmod after: a drop-in is world-readable by
-    # default, and this one holds a credential from the moment it exists.
-    (
-        umask 077
-        printf '[Service]\nEnvironment=GITHUB_TOKEN=%s\n' "$TOKEN" > "${dir}/token.conf"
-    )
-    systemctl daemon-reload
-    # `daemon-reload` re-reads unit files; it does not restart anything. Without this the
-    # drop-in exists on disk and the *running* updaterd still has no GITHUB_TOKEN, so every
-    # later check 404s against a private repo — silently, on a timer, forever. The units are
-    # started before this function runs, so this was not a corner case: it was every board.
-    #
-    # `try-restart`, not `restart`: if updaterd is not running, starting it is
-    # `install_units`' job and doing it here would hide a failure there.
-    systemctl try-restart updaterd.service || warn "could not restart updaterd"
-    say "wrote ${dir}/token.conf (mode 600) so updaterd can fetch updates"
-    warn "that file holds a GitHub token in plaintext. Fine on a developer's board, not on a
-  robot you ship. It is why artifact hosting is still open — docs/design/updater-design.md §6.1."
-}
-
 main() {
     check_environment
     if [ -n "${DUCK_LOCAL_DIR:-}" ] && [ -L "${INSTALL_DIR}/current" ] && [ -z "$FORCE_REINSTALL" ]; then
         die "a release is already installed; use scripts/dev-push.sh for updates"
     fi
     check_board
-    wait_for_clock
-    # Before install_config, which needs to know which release it is pairing a config with.
     resolve_bootstrap_asset
     install_config
     install_dev_key
@@ -1094,7 +812,6 @@ main() {
     quiet_the_release_units
     create_group
     install_units
-    install_token_dropin
     verify_install
     report
 }

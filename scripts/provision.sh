@@ -1,9 +1,7 @@
 #!/bin/sh
 # Provision a freshly flashed board, end to end, in as few commands as a reboot allows.
 #
-#   export DUCK_TOKEN=...                      # only while the repository is private
-#   curl -fsSL -H "Authorization: Bearer $DUCK_TOKEN" .../provision.sh -o /tmp/provision.sh
-#   sudo DUCK_TOKEN="$DUCK_TOKEN" sh /tmp/provision.sh
+#   sudo DUCK_DEV_KEY=/path/to/local.dev.pub sh scripts/provision.sh
 #
 # It stages the board, reboots, and finishes on its own. `robotctl health` works when you log
 # back in. Everything the second half does goes to /var/lib/robot/provision.log, because there
@@ -56,14 +54,7 @@ set -eu
 
 # ── knobs ────────────────────────────────────────────────────────────────────
 #
-# Same names as `install.sh`, which is where most of them end up: a fork or a pinned tag is
-# one decision for the whole bring-up rather than one per script.
-# Kept separately from the resolved values below, because phase 2 has to tell "the operator
-# asked for this" apart from "this is the default" — the state file must not silently win over
-# something typed on the phase 2 command line. See `load_state`.
-ENV_REPO="${DUCK_REPO:-}"
-ENV_REF="${DUCK_REF:-}"
-ENV_TOKEN="${DUCK_TOKEN:-}"
+# Preserve explicit settings across the reboot.
 ENV_DEV_KEY="${DUCK_DEV_KEY:-}"
 ENV_FORCE="${DUCK_FORCE_REINSTALL:-}"
 ENV_WEIRD_BLE="${DUCK_WEIRD_BLE:-}"
@@ -71,20 +62,6 @@ ENV_GSTREAMER="${DUCK_GSTREAMER:-}"
 ENV_RKAIQ="${DUCK_RKAIQ:-}"
 ENV_LOCAL_DIR="${DUCK_LOCAL_DIR:-}"
 export DUCK_LOCAL_DIR="${ENV_LOCAL_DIR}"
-
-REPO="${ENV_REPO:-pollen-robotics/microduck}"
-REF="${ENV_REF:-main}"
-RAW="https://raw.githubusercontent.com/${REPO}/${REF}/scripts"
-
-# For a private repository: a token with read access to contents. Carried across the reboot in
-# the state file rather than asked for twice — see `save_state` for why not `~/.profile`.
-#
-# It is needed three times, not once, which is why it is worth carrying: fetching these scripts,
-# fetching the release, and then *permanently* — `updaterd` reads `GITHUB_TOKEN` from a systemd
-# drop-in on every later update check. `install.sh` writes that drop-in when it is given a token,
-# so passing it through in phase 2 is what makes updates work after provisioning, not just
-# during it. `finish` says where it ended up.
-TOKEN="$ENV_TOKEN"
 
 # A name for this robot, or empty to let it name itself. Set by `--name`; see `main`.
 #
@@ -142,12 +119,6 @@ GSTREAMER="${ENV_GSTREAMER:-1}"
 # the reason spelled out above.
 RKAIQ="${ENV_RKAIQ:-1}"
 
-# The branch the operator asked for, or empty. Kept apart from `REF` because they answer different
-# questions: `REF` is always set — it defaults to `main` — and says where the *scripts* come from,
-# while this says whether a *branch build of the daemon* was asked for. Provisioning plainly with no
-# `--ref` must install the stable release, not `main`'s dev build.
-ASKED_REF="$ENV_REF"
-
 # ── paths ────────────────────────────────────────────────────────────────────
 
 SELF=/usr/local/sbin/robot-provision
@@ -188,31 +159,9 @@ die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-# Fetch one sibling script into $2. Unlike the `fetch_cmd` in setup-board.sh, which prints a
-# command for a human, this one runs it.
+# Copy a sibling script from the local checkout.
 fetch() {
-    # $1 script name, $2 destination
-    if [ -n "${DUCK_LOCAL_DIR:-}" ]; then
-        cp "${DUCK_LOCAL_DIR}/scripts/$1" "$2"
-        return
-    fi
-    if [ -n "$TOKEN" ]; then
-        curl -fsSL -H "Authorization: Bearer ${TOKEN}" -o "$2" "${RAW}/$1" && return 0
-    else
-        curl -fsSL -o "$2" "${RAW}/$1" && return 0
-    fi
-
-    # A private repository answers 404, not 401, for a path with no credentials, so `curl -f`
-    # reports what looks like a wrong URL. Say which of the two it is rather than leaving the
-    # operator to guess at a typo that is not there.
-    if [ -n "$TOKEN" ]; then
-        die "could not fetch $1 from ${REPO}@${REF}.
-  A token was supplied, so a 404 here means it cannot read this repository — check that it
-  has Contents:Read on ${REPO}, and that any SSO authorisation was granted."
-    fi
-    die "could not fetch $1 from ${REPO}@${REF}.
-  No DUCK_TOKEN was supplied. While the repository is private every fetch needs one, and
-  GitHub answers 404 rather than 401, so this looks like a wrong URL and is not."
+    cp "${DUCK_LOCAL_DIR}/scripts/$1" "$2"
 }
 
 # Leave a copy at $SELF, so the command this prints for after the reboot exists.
@@ -224,8 +173,7 @@ persist_self() {
     case "$0" in
         */*) ;;
         *) die "run this from a file, not a pipe:
-  curl -fsSL ${RAW}/provision.sh -o /tmp/provision.sh
-  sudo sh /tmp/provision.sh
+  sudo sh /path/to/microduck/scripts/provision.sh
   Phase 2 runs after a reboot, so there has to be something left on disk to run." ;;
     esac
 
@@ -261,27 +209,18 @@ kv() {
 
 # Write what phase 2 needs to know, 0600, root-only.
 #
-# This is where the token lives between the two phases. Not `~/.profile`, which was the
-# earlier advice: that is a file the operator keeps, readable by their own processes, and it
-# outlives provisioning with a credential in it that nobody remembers putting there. This one
-# is root-only, in the daemon's own state directory, and `finish` deletes it.
+# Removed after provisioning completes.
 save_state() {
     mkdir -p "$STATE_DIR"
-    # Created before it is written, and chmod'ed before anything secret goes in: a token must
-    # never exist even briefly in a world-readable file.
     : > "$STATE"
     chmod 600 "$STATE"
     {
-        kv DUCK_REPO "$REPO"
-        kv DUCK_REF "$REF"
-        kv DUCK_TOKEN "$TOKEN"
         kv DUCK_DEV_KEY "$1"
         kv DUCK_FORCE_REINSTALL "$FORCE_REINSTALL"
         kv DUCK_WEIRD_BLE "$WEIRD_BLE"
         kv DUCK_GSTREAMER "$GSTREAMER"
         kv DUCK_RKAIQ "$RKAIQ"
         kv DUCK_LOCAL_DIR "${DUCK_LOCAL_DIR:-}"
-        kv DUCK_ASKED_REF "$ASKED_REF"
         # `PROVISION_*` for the two that are not environment knobs, so sourcing this file cannot
         # set something an operator could also have exported.
         kv PROVISION_NAME "$NAME"
@@ -289,31 +228,24 @@ save_state() {
     } > "$STATE"
 }
 
-# Read it back. Anything the operator actually typed wins over the file, so a token that was
-# wrong the first time is corrected on the phase 2 command line rather than by editing a
-# root-owned file — the file is a convenience for crossing the reboot, not the authority.
+# Explicit settings override saved values.
 load_state() {
     [ -f "$STATE" ] || return 1
 
     # shellcheck disable=SC1090  # a generated file of KEY=value lines, written by save_state.
     . "$STATE"
 
-    REPO="${ENV_REPO:-${DUCK_REPO:-$REPO}}"
-    REF="${ENV_REF:-${DUCK_REF:-$REF}}"
-    TOKEN="${ENV_TOKEN:-${DUCK_TOKEN:-}}"
     DEV_KEY="${ENV_DEV_KEY:-${DUCK_DEV_KEY:-}}"
     FORCE_REINSTALL="${ENV_FORCE:-${DUCK_FORCE_REINSTALL:-}}"
     WEIRD_BLE="${ENV_WEIRD_BLE:-${DUCK_WEIRD_BLE:-}}"
     GSTREAMER="${ENV_GSTREAMER:-${DUCK_GSTREAMER:-1}}"
     RKAIQ="${ENV_RKAIQ:-${DUCK_RKAIQ:-1}}"
     export DUCK_LOCAL_DIR="${ENV_LOCAL_DIR:-${DUCK_LOCAL_DIR:-}}"
-    ASKED_REF="${ENV_REF:-${DUCK_ASKED_REF:-}}"
     # No `ENV_` mirror for the name, unlike its neighbours. Theirs exist because sourcing this file
     # sets the very `DUCK_*` variables the operator's environment did, so the typed value has to be
     # kept somewhere else to still win. Nothing else writes `PROVISION_NAME`, so a `--name` on the
     # phase 2 command line survives the sourcing and can simply be preferred.
     NAME="${NAME:-${PROVISION_NAME:-}}"
-    RAW="https://raw.githubusercontent.com/${REPO}/${REF}/scripts"
     return 0
 }
 
@@ -430,7 +362,6 @@ install_resume_unit() {
     cat > "$UNIT" <<EOF
 [Unit]
 Description=Finish robot provisioning after the reboot
-Documentation=https://github.com/${REPO}/blob/${REF}/deploy/README.md
 # Never run on a board that has already finished: \`finish\` removes this file.
 ConditionPathExists=${STATE}
 # install.sh downloads a release, so this needs a network that is actually up — not merely
@@ -542,15 +473,10 @@ EOF
 phase_two() {
     say "phase 2: confirm the board, then install the daemon"
 
-    # The persisted copies, which is what those scripts leave behind for exactly this moment.
-    # Re-fetching would work and would also be a second chance for the network to fail.
-    if [ -z "${DUCK_LOCAL_DIR:-}" ] && [ -x "$SETUP_SELF" ]; then
-        DUCK_WEIRD_BLE="$WEIRD_BLE" "$SETUP_SELF"
-    else
-        tmp=/tmp/setup-board.sh
-        fetch setup-board.sh "$tmp"
-        DUCK_WEIRD_BLE="$WEIRD_BLE" sh "$tmp"
-    fi
+    # Use the same local scripts on both sides of the reboot.
+    tmp=/tmp/setup-board.sh
+    fetch setup-board.sh "$tmp"
+    DUCK_WEIRD_BLE="$WEIRD_BLE" sh "$tmp"
 
     # GStreamer, unless turned off — see `GSTREAMER` above.
     #
@@ -558,13 +484,9 @@ phase_two() {
     # apt packages and a report. Phase 1 exists for the two things that cannot swap under a
     # running kernel, and this is neither.
     if [ -n "$GSTREAMER" ] && [ "$GSTREAMER" != 0 ]; then
-        if [ -x "$GST_SELF" ]; then
-            "$GST_SELF"
-        else
-            tmp=/tmp/setup-gstreamer.sh
-            fetch setup-gstreamer.sh "$tmp"
-            sh "$tmp"
-        fi
+        tmp=/tmp/setup-gstreamer.sh
+        fetch setup-gstreamer.sh "$tmp"
+        sh "$tmp"
     fi
 
     # The camera's 3A engine, on the same terms — see `RKAIQ` above. After GStreamer because it
@@ -574,14 +496,10 @@ phase_two() {
     # Two files, not one: the script builds an LD_PRELOAD shim from the C source beside it, and
     # fetching the script alone would leave it with nothing to compile.
     if [ -n "$RKAIQ" ] && [ "$RKAIQ" != 0 ]; then
-        if [ -x "$RKAIQ_SELF" ]; then
-            "$RKAIQ_SELF"
-        else
-            tmp=/tmp/setup-rkaiq.sh
-            fetch setup-rkaiq.sh "$tmp"
-            fetch rkaiq-modinfo-shim.c /tmp/rkaiq-modinfo-shim.c
-            sh "$tmp"
-        fi
+        tmp=/tmp/setup-rkaiq.sh
+        fetch setup-rkaiq.sh "$tmp"
+        fetch rkaiq-modinfo-shim.c /tmp/rkaiq-modinfo-shim.c
+        sh "$tmp"
     fi
 
     # This run is what retires the wifi backstop. Left armed, any later boot where wifi is
@@ -592,13 +510,9 @@ phase_two() {
     # same way, reboot, and go round again — a loop, unattended, on a board that is at least
     # reachable. Reported instead, and wifi left alone.
     if nm_owns_wifi; then
-        if [ -x "$MIGRATE_SELF" ]; then
-            "$MIGRATE_SELF"
-        else
-            tmp=/tmp/migrate-network.sh
-            fetch migrate-network.sh "$tmp"
-            sh "$tmp"
-        fi
+        tmp=/tmp/migrate-network.sh
+        fetch migrate-network.sh "$tmp"
+        sh "$tmp"
     elif [ "$RESUMED" = 1 ]; then
         warn "wifi is not NetworkManager's, so the cutover did not take — most likely the
   backstop restored netplan and rebooted. Not retrying it unattended: that would re-arm the
@@ -607,105 +521,25 @@ phase_two() {
     else
         # A human is here, so let the migration decide for itself — it is idempotent, and
         # retrying in front of someone is exactly the right time to retry.
-        if [ -x "$MIGRATE_SELF" ]; then
-            "$MIGRATE_SELF"
-        else
-            tmp=/tmp/migrate-network.sh
-            fetch migrate-network.sh "$tmp"
-            sh "$tmp"
-        fi
+        tmp=/tmp/migrate-network.sh
+        fetch migrate-network.sh "$tmp"
+        sh "$tmp"
     fi
 
     tmp=/tmp/install.sh
     fetch install.sh "$tmp"
 
-    DUCK_REPO="$REPO"
-    DUCK_REF="$REF"
-    DUCK_TOKEN="$TOKEN"
     DUCK_FORCE_REINSTALL="$FORCE_REINSTALL"
-    export DUCK_REPO DUCK_REF DUCK_TOKEN DUCK_FORCE_REINSTALL
+    export DUCK_FORCE_REINSTALL
     if [ -n "$DEV_KEY" ]; then
         DUCK_DEV_KEY="$DEV_KEY"
         export DUCK_DEV_KEY
     fi
     sh "$tmp"
 
-    apply_asked_ref
     name_the_robot
 
     finish
-}
-
-# Install the daemon that `--ref BRANCH` last built, when a branch was asked for.
-#
-# `install.sh` cannot do this itself: it resolves the release through GitHub`s `/releases/latest`,
-# which excludes pre-releases, and every branch build is one. So provisioning brings the board up on
-# the stable release and this puts the branch build on top — which is also the right arrangement
-# rather than a workaround. The first release installed becomes **golden**, the boot recovery net`s
-# fallback, and a branch build as golden would give a broken branch a broken fallback. This way
-# `golden` stays stable and `current` is the branch.
-#
-# **Fatal, not a warning.** A dev board asked to run a branch and quietly running the stable release
-# instead is the failure that is worst to debug: everything looks installed and the code under test
-# is not there. Better to stop with the reason.
-#
-# The check is on what is *running*, not on the exit status, because `apply` has a health gate: a
-# branch build that fails it is rolled back to stable and the apply reports that honestly — leaving
-# exactly the silent board this exists to prevent.
-apply_asked_ref() {
-    [ -z "${DUCK_LOCAL_DIR:-}" ] || return 0
-    [ -n "$ASKED_REF" ] || return 0
-
-    say "installing the daemon that ${ASKED_REF} last built"
-
-    # **The exit status is not the verdict, and cannot be.** The release`s `hooks/postinstall`
-    # restarts `updaterd`, which is the process streaming progress back — so a *successful* apply
-    # ends with `updaterd closed the connection` and a non-zero exit, every time. Treating that as
-    # failure is why this refused a board that had just installed correctly.
-    if ! robotctl update apply daemon --ref "$ASKED_REF"; then
-        say "the apply did not answer cleanly. Expected: the post-install hook restarts updaterd and
-  drops the connection carrying the reply. What is actually running is the verdict, below."
-    fi
-
-    # Wait for the restarted daemons before reading anything, or this samples mid-swap. `update
-    # status` answering means `updaterd` is back and serving, which is the earliest point at which
-    # the question can be asked at all.
-    waited=0
-    while [ "$waited" -lt 90 ]; do
-        if robotctl update status >/dev/null 2>&1; then
-            break
-        fi
-        waited=$((waited + 2))
-        sleep 2
-    done
-    if [ "$waited" -ge 90 ]; then
-        die "updaterd did not come back within 90s of installing the ${ASKED_REF} build.
-  The board may be mid-rollback. Look at:
-    journalctl -u updaterd -b --no-pager
-    robotctl health"
-    fi
-
-    # And then a moment more: the health gate runs *after* the swap, so a build that fails it is
-    # rolled back seconds later. Reading `current` the instant updaterd answers can catch the new
-    # release still in place on a board that is about to revert.
-    sleep 5
-
-    live="$(readlink /opt/robot/daemon/current 2>/dev/null | sed 's|releases/||')"
-    case "$live" in
-        *-dev.*)
-            say "running ${live}"
-            ;;
-        *)
-            die "asked for ${ASKED_REF} and this board is running ${live}.
-  Either the build could not be installed, or it was installed and rolled back by the health gate.
-  The board is on the stable release and working; the branch is what needs looking at:
-    journalctl -u updaterd -b --no-pager
-    journalctl -u robotd -b --no-pager
-  Common causes: CI has not published the build yet (gh run list --branch ${ASKED_REF}), the
-  branch has no build at all, or this is not a dev board so a dev-signed build is refused
-  (grep -c 'DEV BOARD' ${LOG})."
-            ;;
-    esac
 }
 
 # Give this board the name the operator asked for, if they asked for one.
@@ -732,38 +566,12 @@ ${_stored}"
     fi
 }
 
-# Drop the state file, and account for the token that is *supposed* to stay.
-#
-# There are two copies of that credential on this board and they have opposite lifetimes. The
-# state file existed only to cross the reboot, so it goes. The systemd drop-in `install.sh`
-# writes is the one `updaterd` reads on every check from here on — a private repository's
-# release assets are unreachable without it, so removing that one would leave a robot that is
-# installed, running, and unable to fetch a single update. Which is most of what it is for.
-#
-# Said out loud because "provisioning complete, removed the state file" reads as *the token is
-# gone from this board*, and it is not. On a developer board that is the intended outcome; it
-# is also the thing you would want to know before handing the board to anyone.
+# Remove the temporary provisioning state.
 finish() {
     rm -f "$STATE"
     say "provisioning complete; removed ${STATE}"
 
-    _dropin=/etc/systemd/system/updaterd.service.d/token.conf
-    if [ -n "$TOKEN" ]; then
-        if [ -f "$_dropin" ]; then
-            warn "this board keeps your token in ${_dropin} (mode 600). That is deliberate —
-  updaterd cannot reach a private repository's release assets without it — and it means this
-  board holds a credential that cannot be rotated without coming back to it. Fine for a
-  developer board, never for one you ship."
-        else
-            # The failure this whole path exists to prevent, and it is silent: updates fail on
-            # a timer, forever, with nothing in front of a human.
-            warn "a token was supplied but ${_dropin} does not exist, so updaterd has no
-  credential and every update check will 404 against a private repository — quietly, on a
-  timer. Re-run install.sh with DUCK_TOKEN set, and check its output for that step."
-        fi
-    else
-        say "no token on this board; updaterd can only fetch from a public repository"
-    fi
+    say "updates use the local release directory"
 
     if [ "$RESUMED" = 1 ]; then
         # Nobody is reading this as it happens; it is being written to $LOG for whoever logs in
@@ -783,7 +591,6 @@ EOF
 
 main() {
     [ "$(id -u)" = 0 ] || die "run as root — re-run that same command with sudo"
-    command -v curl >/dev/null 2>&1 || die "curl is required"
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -804,17 +611,23 @@ main() {
         if same_boot_as_phase_one; then
             die "phase 1 has run but this board has not rebooted since.
   Phase 2 installs the daemon, and until the reboot the overlay is staged rather than live —
-  so there is no /dev/ttyS2, and robotd would start and report a hardware fault that is
+  so the motor UART is not ready, and robotd would start and report a hardware fault that is
   really a missing reboot.
     sudo reboot
   Then this finishes on its own, unless DUCK_NO_REBOOT was set — in which case:
     sudo ${SELF}"
         fi
+        DUCK_LOCAL_DIR="$(cd "${DUCK_LOCAL_DIR:-$(dirname "$0")/..}" && pwd)"
+        export DUCK_LOCAL_DIR
+        [ -f "$DUCK_LOCAL_DIR/dist/manifest.json" ] || die "local signed release is missing; run scripts/dev-push.sh --package-only first"
         persist_self
         phase_two
         return 0
     fi
 
+    DUCK_LOCAL_DIR="$(cd "${DUCK_LOCAL_DIR:-$(dirname "$0")/..}" && pwd)"
+    export DUCK_LOCAL_DIR
+    [ -f "$DUCK_LOCAL_DIR/staged/updaterd" ] && [ -f "$DUCK_LOCAL_DIR/dist/manifest.json" ] || die "local signed release is missing; run scripts/dev-push.sh --package-only first"
     persist_self
     phase_one
 }

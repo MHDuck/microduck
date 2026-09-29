@@ -1,7 +1,6 @@
 #!/bin/sh
 # Provision a board from your own machine, in one command.
 #
-#   export DUCK_TOKEN=...              # only while the repository is private
 #   ./scripts/provision-board.sh radxa@192.168.1.42
 #
 # The target is `[user@]host`, and the host can be a name or an address. An address is the
@@ -17,11 +16,6 @@
 # come back, streams the log the unattended half writes, and ends on `robotctl health` — so
 # provisioning is one command with continuous output instead of three with a gap.
 #
-#   --ref BRANCH      provision from a branch: its scripts run the bring-up, and its build of
-#                     the daemon is installed on top of the stable release. Provisioning FAILS
-#                     if that build cannot be installed or is rolled back — a dev board quietly
-#                     running stable when a branch was asked for is worse than a clear stop.
-#                     Needs the branch build to exist, so give CI its minute or two first.
 #   --name NAME       name the robot, at the end of provisioning: `--name Ducky`. Optional —
 #                     without it the board names itself `duck-<four hex>` from its SoC serial,
 #                     which is already unique per board. Changeable later at any time with
@@ -30,11 +24,8 @@
 #   --forget-host-key drop this host's key from known_hosts first. Reflashing the card
 #                     regenerates the board's host keys, so the same address then presents a
 #                     different one and ssh refuses outright — see `probe`.
-#   --local           build and send this clone's signed release, scripts and configuration.
-#   --no-dev-key      do not install the team dev key, for a board that should only take
-#                     releases. The default is to send this clone's
-#                     deploy/dev-key/team.dev.pub.
-#   --dev-key PATH    somewhere else to find it.
+#   --local           compatibility flag; local build and install is always used.
+#   --dev-key PATH    public key matching DUCK_DEV_SECRET_KEY.
 #   --no-ble          do not use Bluetooth to re-find the board. See below for what that costs.
 #   --pause-btd-on-pair
 #                     for a Radxa Zero 3W that pairs a gamepad only while `btd` is out of the way.
@@ -98,18 +89,14 @@
 #     ethernet lease that moves is still a lease nothing here can find.
 set -eu
 
-# Committed, so a new developer needs nothing from anybody to provision a dev board. `--dev-key`
-# overrides it for a key handed over out of band.
+# --dev-key overrides the public key paired with the local signing key.
 DEV_KEY_DEFAULT="$(dirname "$0")/../deploy/dev-key/team.dev.pub"
 
 HOST=""
 # The host without any `user@`, which is what known_hosts is keyed on.
 HOST_ONLY=""
 FORGET_KEY=""
-REF=""
 DEV_KEY="$DEV_KEY_DEFAULT"
-NO_DEV_KEY=""
-USE_LOCAL=""
 NO_BLE=""
 WEIRD_BLE=""
 NO_GSTREAMER=""
@@ -182,17 +169,17 @@ usage() {
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --ref)        REF="${2:?--ref needs a branch}"; shift 2 ;;
+        --ref)        die "local installation uses the current checkout; switch branches before running" ;;
         --name)       ROBOT_NAME="${2:?--name needs a name}"; shift 2 ;;
         --forget-host-key) FORGET_KEY=1; shift ;;
         --dev-key)    DEV_KEY="${2:?--dev-key needs a path}"; shift 2 ;;
-        --no-dev-key) NO_DEV_KEY=1; shift ;;
+        --no-dev-key) die "local signed builds require the matching development public key" ;;
         --no-ble)     NO_BLE=1; shift ;;
         --no-gstreamer) NO_GSTREAMER=1; shift ;;
         --no-rkaiq)   NO_RKAIQ=1; shift ;;
         --weird-ble)  WEIRD_BLE=1; shift ;;
         --pause-btd-on-pair) PAUSE_BTD=1; shift ;;
-        --local)      USE_LOCAL=1; shift ;;
+        --local)      shift ;;
         -h|--help)    usage 0 ;;
         -*)           die "unknown option: $1" ;;
         *)            [ -z "$HOST" ] || die "one board at a time"; HOST="$1"; shift ;;
@@ -594,29 +581,12 @@ ${_probe}" ;;
     esac
 fi
 
-if [ -n "$USE_LOCAL" ]; then
-    [ -z "$REF" ] || die "--local uses this checkout; do not combine it with --ref"
-    [ -z "$NO_DEV_KEY" ] || die "--local requires the local development public key"
-    sh "$(dirname "$0")/dev-push.sh" --package-only
-    if [ "$DEV_KEY" = "$DEV_KEY_DEFAULT" ]; then
-        DEV_KEY="${DUCK_DEV_SECRET_KEY:-$HOME/.duck-keys/local.dev.key}"
-        DEV_KEY="${DEV_KEY%.key}.pub"
-    fi
+sh "$(dirname "$0")/dev-push.sh" --package-only
+if [ "$DEV_KEY" = "$DEV_KEY_DEFAULT" ]; then
+    DEV_KEY="${DUCK_DEV_SECRET_KEY:-$HOME/.duck-keys/local.dev.key}"
+    DEV_KEY="${DEV_KEY%.key}.pub"
 fi
-
-if [ -z "$USE_LOCAL" ] && [ -z "${DUCK_TOKEN:-}" ]; then
-    warn "DUCK_TOKEN is not set. While the repository is private every fetch on the board
-  needs it, and GitHub answers 404 rather than 401, so it will look like a wrong URL.
-  Continuing in case the repository is public by now."
-fi
-
-if [ -n "$NO_DEV_KEY" ]; then
-    DEV_KEY=""
-elif [ ! -f "$DEV_KEY" ]; then
-    die "${DEV_KEY} is not a readable file. It ships with the repository, so a clone should
-  always have it — pass --dev-key PATH for a key from somewhere else, or --no-dev-key for a
-  board that should only take releases."
-fi
+[ -f "$DEV_KEY" ] || die "missing local signing public key: ${DEV_KEY}; pass --dev-key PATH"
 
 # ── arrange the Bluetooth fallback, while ssh still works ────────────────────
 #
@@ -674,43 +644,30 @@ if [ -n "$DEV_KEY" ]; then
 fi
 
 # Keep the local payload on the board across its reboot.
-if [ -n "$USE_LOCAL" ]; then
-    _local="$(dirname "$0")/provision.sh"
-    [ -f "$_local" ] || die "--local needs ${_local}, and it is not there.
-  Run this from a clone, or drop --local and let the board fetch it from ${REF:-main}."
-    say "sending this clone's provision.sh"
-    scp -q "$_local" "$(scp_target /tmp/provision.sh)" || die "could not copy provision.sh"
-    _root="$(cd "$(dirname "$0")/.." && pwd)"
-    _remote_local="/var/lib/robot/provision-local-$(date +%s)-$$"
-    _archive="$(mktemp)"
-    tar -czf "$_archive" -C "$_root" scripts deploy dist staged/updaterd
-    scp -q "$_archive" "$(scp_target /tmp/microduck-local.tar.gz)" || die "could not copy local payload"
-    rm -f "$_archive"
-else
-    _raw="https://raw.githubusercontent.com/pollen-robotics/microduck/${REF:-main}/scripts/provision.sh"
-    say "having the board fetch provision.sh from ${REF:-main}"
-    # Fetched by the board rather than by this machine and copied over: the board is the one
-    # that has to be able to reach GitHub with that token, and finding out here would prove
-    # the wrong thing.
-    rsh "curl -fsSL ${DUCK_TOKEN:+-H \"Authorization: Bearer ${DUCK_TOKEN}\"} '${_raw}' -o /tmp/provision.sh" \
-        || die "the board could not fetch provision.sh from ${REF:-main}.
-  A private repository answers 404 rather than 401, so this is either a missing DUCK_TOKEN, a
-  token without Contents:Read on the repository, or a branch name that does not exist."
-fi
+_local="$(dirname "$0")/provision.sh"
+[ -f "$_local" ] || die "--local needs ${_local}, and it is not there.
+  Run this from the local checkout."
+say "sending this clone's provision.sh"
+scp -q "$_local" "$(scp_target /tmp/provision.sh)" || die "could not copy provision.sh"
+_root="$(cd "$(dirname "$0")/.." && pwd)"
+_remote_local="/var/lib/robot/provision-local-$(date +%s)-$$"
+_archive="$(mktemp)"
+tar -czf "$_archive" -C "$_root" scripts deploy dist staged/updaterd
+scp -q "$_archive" "$(scp_target /tmp/microduck-local.tar.gz)" || die "could not copy local payload"
+rm -f "$_archive"
+
 
 # ── phase 1, which ends in a reboot that takes the connection with it ────────
 
 say "starting provisioning — the board will reboot and this will wait for it"
 echo
 
-_env="DUCK_TOKEN='${DUCK_TOKEN:-}'"
-[ -z "$REF" ]     || _env="${_env} DUCK_REF='${REF}'"
+_env="DUCK_LOCAL_DIR='${_remote_local}'"
 [ -z "$DEV_KEY" ] || _env="${_env} DUCK_DEV_KEY=/tmp/team.dev.pub"
 [ -z "$WEIRD_BLE" ] || _env="${_env} DUCK_WEIRD_BLE=1"
 [ -z "$PAUSE_BTD" ]  || _env="${_env} DUCK_PAUSE_BTD=1"
 [ -z "$NO_GSTREAMER" ] || _env="${_env} DUCK_GSTREAMER=0"
 [ -z "$NO_RKAIQ" ]     || _env="${_env} DUCK_RKAIQ=0"
-[ -z "$USE_LOCAL" ] || _env="${_env} DUCK_LOCAL_DIR='${_remote_local}'"
 
 # The name is a flag rather than one more `DUCK_*`, because on the board it goes no further than
 # `robotctl system set-name`. Single-quoted with any quote of its own escaped: a name is free text,
@@ -724,10 +681,7 @@ fi
 # `-t` so sudo can prompt for a password, and the exit status deliberately ignored: this
 # command ends by rebooting the machine it is running on, so ssh reporting a dropped connection
 # is the *expected* outcome. Whether it worked is decided below, by looking at the board.
-_stage=""
-if [ -n "$USE_LOCAL" ]; then
-    _stage="sudo install -d -m 755 '${_remote_local}' && sudo tar -xzf /tmp/microduck-local.tar.gz -C '${_remote_local}' && "
-fi
+_stage="sudo install -d -m 755 '${_remote_local}' && sudo tar -xzf /tmp/microduck-local.tar.gz -C '${_remote_local}' && "
 ssh -t -o StrictHostKeyChecking=accept-new "$HOST" \
     "${_stage}sudo env ${_env} sh /tmp/provision.sh${_args}" || true
 
