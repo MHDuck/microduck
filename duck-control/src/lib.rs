@@ -1,0 +1,31 @@
+//! The robot control core: everything between reading the bus and writing it.
+//!
+//! Deliberately not a daemon. There is no tokio here, no socket, no systemd — `robotd`
+//! owns all of that. The boundary is enforced by the compiler rather than by discipline,
+//! which is what stops process concerns leaking into the code that drives motors.
+//!
+//! The control path it holds — model, bus, [`io::RobotIo`], observations, policy, safety — is
+//! designed in `docs/design/robotd-design.md` §2.
+
+pub mod bus;
+pub mod fall;
+pub mod ftbus;
+pub mod hardware;
+pub mod imu;
+pub mod imui2c;
+pub mod io;
+pub mod model;
+pub mod obs;
+pub mod policy;
+pub mod safety;
+
+pub use imu::ImuData;
+pub use io::{
+    FakeImu, FakeIo, ImuIo, ImuStale, IoError, JointTargets, RobotIo, Sensors, SlowSensors,
+};
+pub use hardware::{HD1910_BAM_M1, HD1910_FIRMWARE, Hd1910BamM1, Hd1910Firmware};
+pub use model::{
+    BATTERY_EMPTY_V, BATTERY_FULL_V, DEFAULT_POSITION, IMU_DXL_ID, JOINT_IDS, JOINT_NAMES,
+    NUM_JOINTS, battery_percent,
+};
+pub use obs::{ACTION_LEN, Command, OBS_LEN, Observation};
