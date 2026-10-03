@@ -2,7 +2,7 @@
 //! inference on stdout: `<ts_ms>\t<p>\t<state>`.
 //!
 //! ```text
-//! arecord -D plughw:aic3104,0 -f S16_LE -r 16000 -c 1 -t raw | pet-detect --model <onnx>
+//! arecord -D plughw:microducki2s3,0 -f S16_LE -r 16000 -c 1 -t raw | pet-detect --model <onnx>
 //! ```
 
 use std::io::Read;

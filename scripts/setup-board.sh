@@ -196,6 +196,25 @@ check_environment() {
     done
 }
 
+fetch_repo_file() {
+    cp "${DUCK_LOCAL_DIR}/$1" "$2"
+}
+
+# Add one word to Armbian's overlays= line without replacing other overlays.
+ensure_overlay_word() {
+    if [ ! -f "$ENV_TXT" ]; then
+        warn "no ${ENV_TXT}; cannot enable overlay ${1}"
+        return 0
+    fi
+    if ! grep -Eq '^overlays=' "$ENV_TXT"; then
+        printf 'overlays=%s\n' "$1" >> "$ENV_TXT"
+        needs_reboot=1
+    elif ! grep -E '^overlays=' "$ENV_TXT" | grep -qw "$1"; then
+        sed -i "s/^overlays=\(.*\)\$/overlays=\1 ${1}/" "$ENV_TXT"
+        needs_reboot=1
+    fi
+}
+
 # Enable the UART the Dynamixel bus lives on.
 #
 # Two traps here, both of which fail *silently* — which is why this is scripted rather than
@@ -470,297 +489,6 @@ free_motor_port() {
 # The change sets `needs_reboot` rather than restarting bluetooth. Restarting the daemon here leaves
 # the kernel holding hci0 while bluetoothd reports "No default controller available", which needs a
 # reboot to clear.
-# ── audio: the TLV320AIC3104 codec (speaker + microphone) ─────────────────────────────────
-#
-# The robot's voice and ear. Ported from the prototype installer's audio bring-up, and like
-# everything it did, every step here fails *soft* — a board without working audio walks
-# identically, so nothing below is allowed to stop the provisioning.
-#
-# Five layers, each idempotent:
-#   1. alsa-utils (aplay/arecord/amixer) + the DKMS toolchain + dtc.
-#   2. The Armbian *vendor* (BSP 6.1) kernel: the codec's I²S clock tree only exists there,
-#      and the DKMS module builds against its headers.
-#   3. Device-tree overlays, compiled from the sources vendored in deploy/audio/: the
-#      hardware i2c3 bus on header pins 3/5, and the codec + I²S sound card grafted onto it.
-#      (The prototype also kept a bit-banged i2c-gpio fallback; it was the revert path for
-#      rise-time trouble that never came back, and it is not carried here.)
-#   4. The codec driver itself, out of tree via DKMS — the vendor kernel does not build
-#      SND_SOC_AIC3X, which is why a stock board has no aic3104 card.
-#   5. Mixer levels at boot: aic3104-init.service, running the vendored amixer script
-#      before robotd so the greet is audible.
-#
-# The voice bank itself is NOT provisioned here — the release's postinstall renders it with
-# the `sounds` binary the release carries, seeded from the SoC serial.
-
-fetch_repo_file() {
-    cp "${DUCK_LOCAL_DIR}/$1" "$2"
-}
-
-# Add one word to armbianEnv's overlays= line, preserving order (the codec overlay must
-# come after its bus overlay — it grafts the codec node onto the bus that overlay enables).
-ensure_overlay_word() {
-    # Same guard `configure_overlay` has, for the same reason — and here it matters more:
-    # without it the `echo >>` below *creates* an armbianEnv.txt that never existed, on a
-    # board that boots from something else entirely, and asks for a reboot to load it.
-    if [ ! -f "$ENV_TXT" ]; then
-        warn "no ${ENV_TXT}; not an Armbian image?
-  Load the ${1} overlay by whatever means this image provides, then re-run.
-  Everything else here will still be done."
-        return 0
-    fi
-    if ! grep -Eq '^overlays=' "$ENV_TXT"; then
-        echo "overlays=$1" >> "$ENV_TXT"
-        needs_reboot=1
-    elif ! grep -E '^overlays=' "$ENV_TXT" | grep -qw "$1"; then
-        sed -i "s/^overlays=\(.*\)\$/overlays=\1 $1/" "$ENV_TXT"
-        needs_reboot=1
-    fi
-}
-
-configure_audio() {
-    say "audio: TLV320AIC3104 codec bring-up"
-
-    # 1. Packages. i2c-tools is here rather than with the ToF below because it is
-    #    what *creates the `i2c` group* (its postinst does), and both the codec and
-    #    the ToF sit on that bus — plus `i2cdetect` is the first thing anyone runs
-    #    when a device on it goes quiet.
-    audio_pkgs="alsa-utils device-tree-compiler dkms gcc make i2c-tools"
-    missing=""
-    for pkg in $audio_pkgs; do
-        dpkg -s "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
-    done
-    if [ -n "$missing" ]; then
-        say "installing:$missing"
-        apt-get update -qq || true
-        # shellcheck disable=SC2086  # word-splitting the package list is the point
-        apt-get install -y -qq $missing \
-            || { warn "apt failed — audio will not work on this board"; return 0; }
-    fi
-
-    # 2. The vendor kernel, with headers for the DKMS build.
-    if ! dpkg -s linux-image-vendor-rk35xx >/dev/null 2>&1 \
-        || ! dpkg -s linux-dtb-vendor-rk35xx >/dev/null 2>&1 \
-        || ! dpkg -s linux-headers-vendor-rk35xx >/dev/null 2>&1; then
-        say "installing the Armbian vendor kernel (the codec's I²S tree lives there)"
-        apt-get update -qq || true
-        if apt-get install -y linux-image-vendor-rk35xx linux-dtb-vendor-rk35xx \
-            linux-headers-vendor-rk35xx; then
-            needs_reboot=1
-        else
-            warn "could not install the vendor kernel — audio will not work"
-            return 0
-        fi
-    fi
-    vendor_ver=$(find /lib/modules -maxdepth 1 -name '*-vendor-rk35xx' 2>/dev/null | sort -V | tail -1 | xargs -r basename)
-    if [ -z "$vendor_ver" ]; then
-        warn "no vendor kernel under /lib/modules — audio will not work"
-        return 0
-    fi
-    # Make it the active kernel. The apt postinst repoints these on a fresh install;
-    # re-asserted here for idempotent re-runs where the 'current' kernel touched them last.
-    for pair in "Image:vmlinuz-$vendor_ver" "uInitrd:uInitrd-$vendor_ver" "dtb:dtb-$vendor_ver"; do
-        link="${pair%%:*}"; target="${pair#*:}"
-        if [ -e "/boot/$target" ] && [ "$(readlink "/boot/$link")" != "$target" ]; then
-            say "pointing /boot/$link -> $target"
-            ln -sfn "$target" "/boot/$link"
-            needs_reboot=1
-        fi
-    done
-    depmod "$vendor_ver" 2>/dev/null || true
-
-    # 3. Overlays: compile the vendored sources against the vendor kernel's overlay dir.
-    dtbo_dir="/boot/dtb-${vendor_ver}/rockchip/overlay"
-    [ -d "$dtbo_dir" ] || dtbo_dir=$(find /boot -maxdepth 3 -type d -path '*/rockchip/overlay' 2>/dev/null | head -1)
-    if [ -n "$dtbo_dir" ]; then
-        for ov_name in i2c3-pihat aic3104-i2c3; do
-            ov_tmp=$(mktemp -d)
-            if fetch_repo_file "deploy/audio/${ov_name}.dts" "$ov_tmp/src.dts" \
-                && dtc -@ -I dts -O dtb -o "$ov_tmp/out.dtbo" "$ov_tmp/src.dts" 2>/dev/null; then
-                if [ ! -f "$dtbo_dir/rk3568-${ov_name}.dtbo" ] \
-                    || ! cmp -s "$ov_tmp/out.dtbo" "$dtbo_dir/rk3568-${ov_name}.dtbo"; then
-                    say "installing overlay rk3568-${ov_name}.dtbo"
-                    cp "$ov_tmp/out.dtbo" "$dtbo_dir/rk3568-${ov_name}.dtbo"
-                    needs_reboot=1
-                fi
-                ensure_overlay_word "$ov_name"
-            else
-                warn "could not fetch or compile ${ov_name}.dts — audio will not work"
-            fi
-            rm -rf "$ov_tmp"
-        done
-    else
-        warn "no rockchip overlay directory under /boot — audio overlays not installed"
-    fi
-
-    # 4. The codec driver, via DKMS. Versioned by the vendored dkms.conf, so a source bump
-    #    upstream re-deploys cleanly.
-    dkms_tmp=$(mktemp -d)
-    dkms_ok=1
-    for f in dkms.conf Makefile tlv320aic3x.c tlv320aic3x.h tlv320aic3x-i2c.c; do
-        fetch_repo_file "deploy/audio/aic3x-dkms/$f" "$dkms_tmp/$f" || { dkms_ok=0; break; }
-    done
-    if [ "$dkms_ok" = 1 ]; then
-        dkms_ver=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"$/\1/p' "$dkms_tmp/dkms.conf")
-        dkms_src="/usr/src/aic3x-$dkms_ver"
-        deploy_needed=0
-        for f in dkms.conf Makefile tlv320aic3x.c tlv320aic3x.h tlv320aic3x-i2c.c; do
-            cmp -s "$dkms_tmp/$f" "$dkms_src/$f" || deploy_needed=1
-        done
-        if [ "$deploy_needed" = 1 ]; then
-            say "deploying aic3x DKMS sources to $dkms_src"
-            dkms remove "aic3x/$dkms_ver" --all >/dev/null 2>&1 || true
-            mkdir -p "$dkms_src"
-            cp "$dkms_tmp"/* "$dkms_src/"
-        fi
-        if dkms status "aic3x/$dkms_ver" 2>/dev/null | grep "$vendor_ver" | grep -q installed; then
-            say "aic3x DKMS module already installed"
-        else
-            # Armbian ships the vendor headers without built host tools; DKMS needs modpost.
-            if [ -d "/usr/src/linux-headers-$vendor_ver" ] \
-                && [ ! -x "/usr/src/linux-headers-$vendor_ver/scripts/mod/modpost" ]; then
-                say "rebuilding the vendor headers' host tools (modpost)"
-                dpkg-reconfigure linux-headers-vendor-rk35xx >/dev/null 2>&1 || true
-            fi
-            say "building the aic3x codec driver via DKMS (takes a minute)"
-            if dkms install "aic3x/$dkms_ver" -k "$vendor_ver"; then
-                say "aic3x DKMS module installed for $vendor_ver"
-                needs_reboot=1
-            else
-                warn "DKMS build failed — audio will not work"
-                warn "see /var/lib/dkms/aic3x/$dkms_ver/build/make.log"
-            fi
-        fi
-    else
-        warn "could not fetch the aic3x DKMS sources — audio will not work"
-    fi
-    rm -rf "$dkms_tmp"
-
-    # 5. Mixer levels at boot. The service polls for the card (the probe is deferred until
-    #    the DKMS module autoloads), sets the speaker path and routes the onboard mic.
-    init_tmp=$(mktemp)
-    if fetch_repo_file "deploy/audio/aic3104-init.sh" "$init_tmp"; then
-        if [ ! -f /usr/local/bin/aic3104-init.sh ] \
-            || ! cmp -s "$init_tmp" /usr/local/bin/aic3104-init.sh; then
-            say "installing /usr/local/bin/aic3104-init.sh"
-            install -m 755 "$init_tmp" /usr/local/bin/aic3104-init.sh
-        fi
-        svc_tmp=$(mktemp)
-        cat > "$svc_tmp" <<'UNIT'
-[Unit]
-Description=TLV320AIC3104 mixer init
-After=systemd-modules-load.service
-# No ConditionPathExists: the sound card probe is deferred until the DKMS codec module
-# autoloads, so the card can appear seconds into boot — the script polls for it instead.
-Before=robotd.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/aic3104-init.sh
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-        if [ ! -f /etc/systemd/system/aic3104-init.service ] \
-            || ! cmp -s "$svc_tmp" /etc/systemd/system/aic3104-init.service; then
-            say "installing aic3104-init.service"
-            install -m 644 "$svc_tmp" /etc/systemd/system/aic3104-init.service
-            systemctl daemon-reload
-        fi
-        systemctl is-enabled --quiet aic3104-init.service \
-            || systemctl enable aic3104-init.service >/dev/null 2>&1 || true
-        rm -f "$svc_tmp"
-    else
-        warn "could not fetch aic3104-init.sh — the mixer stays at power-on levels"
-    fi
-    rm -f "$init_tmp"
-}
-
-# ── the head ToF sensor's bus ──────────────────────────────────────────────────
-#
-# The sensor is a VL53L5CX or VL53L8CX on the *same* i2c3 bus the audio codec is
-# on, so `configure_audio` has already done the expensive part: the overlay, the
-# vendor kernel, and i2c-tools (which is what creates the `i2c` group `tofd`
-# joins). This adds the one thing left — a stable name for the bus.
-#
-# `/dev/i2c-3` is what the overlay happens to produce today, and a kernel or
-# overlay change can renumber it. A udev symlink keeps `tofd`'s default correct
-# across that. `tofd` also falls back to `/dev/i2c-3` on a board provisioned
-# before this rule existed, so neither half is load-bearing on its own.
-configure_tof() {
-    rule=/etc/udev/rules.d/99-robot-i2c-pihat.rules
-    # Two matchers, one per bus flavour the board may end up with: the RK3566's
-    # i2c3 controller by its device-tree address, and the bit-banged i2c-gpio bus
-    # by name. Only one exists at a time, so the symlink follows whichever it is.
-    content='SUBSYSTEM=="i2c-dev", KERNELS=="fe5c0000.i2c", SYMLINK+="i2c-pihat"
-SUBSYSTEM=="i2c-dev", ATTR{name}=="i2c-gpio-pihat", SYMLINK+="i2c-pihat"'
-
-    if [ -f "$rule" ] && [ "$(cat "$rule")" = "$content" ]; then
-        say "ToF: /dev/i2c-pihat rule already in place"
-        return 0
-    fi
-    say "ToF: installing the /dev/i2c-pihat udev rule"
-    printf '%s\n' "$content" > "$rule"
-    chmod 644 "$rule"
-    # Applied now as well as at the next boot, so a sensor already fitted works
-    # without one — `udevadm` failing is not worth stopping provisioning for.
-    udevadm control --reload-rules 2>/dev/null || true
-    udevadm trigger --subsystem-match=i2c-dev 2>/dev/null || true
-}
-
-# ── the IMU's device-tree overlay and stable name ─────────────────────────────
-#
-# The LSM6DSV16X lives on i2c4 (header pins 27/28, VDD_I2C), aliased
-# /dev/i2c-imu — it is NOT on the servo bus any more. Two halves:
-#   1. Compile the vendored deploy/overlays/i2c4-imu.dts into the vendor
-#      kernel's overlay dir (the same dir configure_camera mirrors into), so
-#      the `i2c4-imu` word configure_overlay already put in overlays= is not a
-#      dangling name that the boot silently skips.
-#   2. The udev rule that names the controller /dev/i2c-imu.
-#
-# Needs the vendor kernel (which configure_audio installs), so call it after
-# configure_audio. `$1` is vendor_ver, like configure_camera.
-configure_imu() {
-    dtbo_dir="/boot/dtb-${1}/rockchip/overlay"
-    [ -d "$dtbo_dir" ] || dtbo_dir=$(find /boot -maxdepth 3 -type d -path '*/rockchip/overlay' 2>/dev/null | head -1)
-    if [ -z "$dtbo_dir" ]; then
-        warn "no rockchip overlay directory under /boot; the i2c4-imu overlay is not installed"
-        return 0
-    fi
-
-    ov_name="$REQUIRED_OVERLAY_IMU"
-    ov_tmp=$(mktemp -d)
-    if fetch_repo_file "deploy/overlays/${ov_name}.dts" "$ov_tmp/src.dts" \
-        && dtc -@ -I dts -O dtb -o "$ov_tmp/out.dtbo" "$ov_tmp/src.dts" 2>/dev/null; then
-        if [ ! -f "$dtbo_dir/rk3568-${ov_name}.dtbo" ] \
-            || ! cmp -s "$ov_tmp/out.dtbo" "$dtbo_dir/rk3568-${ov_name}.dtbo"; then
-            say "installing overlay rk3568-${ov_name}.dtbo"
-            cp "$ov_tmp/out.dtbo" "$dtbo_dir/rk3568-${ov_name}.dtbo"
-            needs_reboot=1
-        fi
-    else
-        warn "could not fetch or compile ${ov_name}.dts — the i2c4-imu overlay will be missing"
-    fi
-    rm -rf "$ov_tmp"
-
-    # The stable name: /dev/i2c-imu → the i2c4 controller, by its device-tree
-    # address. Kept in step with deploy/overlays/i2c4-imu.dts and the vendor
-    # DTB's i2c4 node (fe5d0000, per the migration design §2.6). Its own rule
-    # file so it coexists with — and never overwrites — the i2c-pihat rule
-    # configure_tof wrote: one stable symlink per bus, two separate files.
-    rule=/etc/udev/rules.d/99-robot-i2c-imu.rules
-    content='SUBSYSTEM=="i2c-dev", KERNELS=="fe5d0000.i2c", SYMLINK+="i2c-imu"'
-    if [ -f "$rule" ] && [ "$(cat "$rule")" = "$content" ]; then
-        say "IMU: /dev/i2c-imu rule already in place"
-    else
-        say "IMU: installing the /dev/i2c-imu udev rule"
-        printf '%s\n' "$content" > "$rule"
-        chmod 644 "$rule"
-        udevadm control --reload-rules 2>/dev/null || true
-        udevadm trigger --subsystem-match=i2c-dev 2>/dev/null || true
-    fi
-}
-
 # ── the head camera's device-tree overlay ──────────────────────────────────────
 #
 # Without it the sensor is never probed: no /dev/videoN, and nothing in dmesg either, which
@@ -1104,6 +832,27 @@ configure_feetech() {
     [ -f "$ENV_TXT" ] || die "${ENV_TXT} is required"
     grep -q '^fdtfile=rockchip/rk3566-radxa-zero3.dtb$' "$ENV_TXT" \
         || die "this wiring requires rk3566-radxa-zero3.dtb"
+
+    # Older board setup revisions enabled an I2C TLV320 codec and a mixer
+    # service. This board uses the microduck-i2s3/MAX98357A path instead.
+    old_overlays="$(sed -n 's/^overlays=//p' "$ENV_TXT")"
+    new_overlays="$(printf '%s\n' "$old_overlays" | sed -E \
+        -e 's/(^|[[:space:]])i2c3-pihat([[:space:]]|$)/ /g' \
+        -e 's/(^|[[:space:]])aic3104-i2c3([[:space:]]|$)/ /g' \
+        -e 's/[[:space:]]+/ /g' -e 's/^ //' -e 's/ $//')"
+    if [ "$old_overlays" != "$new_overlays" ]; then
+        say "removing legacy TLV320 overlays"
+        sed -i "s/^overlays=.*/overlays=$new_overlays/" "$ENV_TXT"
+        needs_reboot=1
+    fi
+    if [ -e /etc/systemd/system/aic3104-init.service ] \
+        || [ -e /usr/local/bin/aic3104-init.sh ]; then
+        say "removing legacy TLV320 mixer service"
+        systemctl disable --now aic3104-init.service >/dev/null 2>&1 || true
+        rm -f /etc/systemd/system/aic3104-init.service /usr/local/bin/aic3104-init.sh
+        systemctl daemon-reload
+    fi
+
     ov_dir="/boot/dtb-$(uname -r)/rockchip/overlay"
     [ -d "$ov_dir" ] || ov_dir=/boot/dtb/rockchip/overlay
     for name in i2c3-m0 i2c4-m0 uart4-m1; do

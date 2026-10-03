@@ -343,8 +343,8 @@ sudo robotctl configure
 
 Set `audio.greet = false` and take the restart it offers on save. That silences the one
 quack and leaves the triggers and the mic alone, which `audio.enabled = false` does not.
-Audio hardware bring-up — codec driver, overlays, mixer — is `setup-board.sh`'s audio
-section, once per board.
+The board setup installs the `microduck-i2s3` I²S overlay. MAX98357A has no I²C mixer;
+its startup mute needs SD_MODE wired to a GPIO, which this schematic does not do.
 
 To audition a voice or regenerate the bank by hand, the release carries the generator:
 
@@ -488,13 +488,12 @@ different fixes:
 To see what is on the bus by hand, or to watch frames without a terminal UI:
 
 ```
-sudo i2cdetect -y -r 3
+sudo i2cdetect -y -r 4
 journalctl -u tofd -b
 ```
 
-The sensor shares the codec's I²C bus, so `setup-board.sh`'s audio section already
-provisions the bus itself; the ToF step only adds the stable `/dev/i2c-pihat`
-name. Both sensor generations are supported — a VL53L5CX and a VL53L8CX are
+The ToF sensor is on I²C4, aliased `/dev/i2c-pihat`; audio uses separate I²S3
+signals. Both sensor generations are supported — a VL53L5CX and a VL53L8CX are
 interchangeable on the board, and the daemon picks the driver from an ID read.
 
 **The IMU is not on the servo bus any more (2026-09-04).** It lives on its own I²C controller,

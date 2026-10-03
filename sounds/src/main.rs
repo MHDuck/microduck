@@ -53,8 +53,8 @@ enum Cmd {
         seed: Option<u32>,
         #[arg(long, default_value_t = 0)]
         variant: u32,
-        /// ALSA device; the robot's codec by default.
-        #[arg(long, default_value = "plughw:aic3104")]
+        /// ALSA device; the robot's microducki2s3 card by default.
+        #[arg(long, default_value = "plughw:CARD=microducki2s3,DEV=0")]
         device: String,
     },
     /// Audition the live theremin voice: a scripted hand sweep through the streaming synth.
@@ -71,8 +71,8 @@ enum Cmd {
         seed: Option<u32>,
         #[arg(long, default_value_t = 0)]
         variant: u32,
-        /// ALSA device; the robot's codec by default.
-        #[arg(long, default_value = "plughw:aic3104")]
+        /// ALSA device; the robot's microducki2s3 card by default.
+        #[arg(long, default_value = "plughw:CARD=microducki2s3,DEV=0")]
         device: String,
     },
     /// The duck chorale, on a laptop: several ducks singing one piece in four parts.
@@ -109,8 +109,8 @@ enum Cmd {
         /// driver, which is the target; `--rolloff 0` renders for a full-range system instead.
         #[arg(long, default_value_t = 300.0)]
         rolloff: f64,
-        /// ALSA device; the robot's codec by default.
-        #[arg(long, default_value = "plughw:aic3104")]
+        /// ALSA device; the robot's microducki2s3 card by default.
+        #[arg(long, default_value = "plughw:CARD=microducki2s3,DEV=0")]
         device: String,
     },
     /// Make sure this robot's voice bank exists and is current — render it if not.

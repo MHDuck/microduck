@@ -10,7 +10,7 @@ coos when petting starts.
 
 - **Library**: `PettingDetector` (streaming, hysteresis) and `worker::PetHandle`
   (arecord subprocess + event channels).
-- **`pet-detect`** (binary): pipe `arecord -D plughw:aic3104,0 -f S16_LE -r 16000 -c 1 -t raw`
+- **`pet-detect`** (binary): pipe `arecord -D plughw:microducki2s3,0 -f S16_LE -r 16000 -c 1 -t raw`
   into it and watch the probability while you scratch the head.
 - **`pet-features`** (binary): dumps log-mel features of a WAV — the training side of the
   train/infer parity contract.
@@ -23,7 +23,7 @@ coos when petting starts.
 same code path the robot runs, so there is no train/infer drift. Record data on the robot:
 
 ```bash
-arecord -D plughw:aic3104,0 -f S16_LE -r 16000 -c 1 -d 30 /tmp/petting_01.wav
+arecord -D plughw:microducki2s3,0 -f S16_LE -r 16000 -c 1 -d 30 /tmp/petting_01.wav
 ```
 
 into `data/petting/` and `data/normal/` (walking, motors, ambient — anything that isn't

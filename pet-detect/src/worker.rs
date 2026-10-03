@@ -166,7 +166,7 @@ impl Default for PetConfig {
     fn default() -> Self {
         let lib = PettingDetectorConfig::default();
         Self {
-            alsa_device: "plughw:aic3104,0".into(),
+            alsa_device: "plughw:microducki2s3,0".into(),
             model_path: PathBuf::from("/opt/robot/daemon/current/models/pet_detect.onnx"),
             enter_threshold: lib.enter_threshold,
             exit_threshold: lib.exit_threshold,
@@ -238,9 +238,8 @@ impl PetHandle {
 }
 
 /// Backoff between restarts of a capture that will not stay up: doubling from 250 ms to a
-/// cap. A board where `arecord` exists but the codec does not — `configure_audio` fails soft
-/// at every step, so a failed DKMS build leaves exactly that — makes `arecord` exit
-/// immediately on every spawn. Without a backoff on *that* path (the original only slept
+/// cap. A board where `arecord` exists but the configured capture device does not makes it
+/// exit immediately on every spawn. Without a backoff on *that* path (the original only slept
 /// when the `arecord` binary itself was missing) the worker fork/execs as fast as the CPU
 /// allows for the life of the daemon, with a `warn!` per iteration into the journal.
 const RESTART_BACKOFF_MIN: Duration = Duration::from_millis(250);
@@ -251,7 +250,7 @@ const RESTART_HEALTHY: Duration = Duration::from_secs(5);
 
 /// After this many consecutive immediate failures the per-restart line drops to `debug`.
 /// The backoff is at its cap by then and the warning has been said — the worker keeps
-/// trying (a codec that comes back should be heard) but stops narrating it.
+/// trying (a device that comes back should be heard) but stops narrating it.
 const RESTART_QUIET_AFTER: u32 = 5;
 
 fn worker_loop(

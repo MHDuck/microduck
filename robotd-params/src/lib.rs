@@ -402,14 +402,14 @@ impl ThereminParams {
 }
 
 /// `[audio]` — the voice and the microphone. All optional equipment: a robot without a
-/// codec (or a bank) walks identically and stays quiet, so nothing here reaches a health
+/// audio hardware (or a bank) walks identically and stays quiet, so nothing here reaches a health
 /// verdict.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct AudioParams {
     /// Master switch: no sounds, no mic worker.
     pub enabled: bool,
-    /// ALSA playback device — the TLV320AIC3104 codec.
+    /// ALSA playback device — the board's microducki2s3 I2S card.
     pub device: String,
     /// Where the per-robot voice bank lives. The release's postinstall renders it there
     /// (`sounds ensure-bank`), seeded from the SoC serial.
@@ -456,9 +456,9 @@ impl AudioParams {
     }
 
     /// The capture PCM for the mic worker: the playback device with subdevice 0. Only
-    /// appended when the operator has not already spelled a subdevice out — `plughw:aic3104`
-    /// in `robotd.toml` is the default and needs it, but the equally natural full spec
-    /// `plughw:aic3104,0` would otherwise become `plughw:aic3104,0,0`, which no card
+    /// appended when the operator has not already spelled a subdevice out —
+    /// `plughw:CARD=microducki2s3,DEV=0` in `robotd.toml` is the default and needs it, but a
+    /// full spec with a subdevice would otherwise gain another subdevice, which no card
     /// answers to. That lands the worker in its restart loop for the life of the daemon.
     pub fn capture_device(&self) -> String {
         if self.device.contains(',') {

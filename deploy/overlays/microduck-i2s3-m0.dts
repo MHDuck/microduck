@@ -2,6 +2,12 @@
 /plugin/;
 
 &{/} {
+    /*
+     * The MAX98357A is an I2S amp with no I2C control interface. This board
+     * straps SD_MODE high, so Linux cannot mute it; the dummy DAI only gives
+     * ALSA a link to the I2S controller. If SD_MODE is later routed to a GPIO,
+     * describe the amp with maxim,max98357a and sdmode-gpios instead.
+     */
     microduck_codec: microduck-codec {
         compatible = "rockchip,dummy-codec";
         #sound-dai-cells = <0>;

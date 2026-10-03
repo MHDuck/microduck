@@ -278,12 +278,12 @@ mode = "walk"
 [audio]
 # The robot's voice (the seeded synth bank under /var/lib/robot/sounds — rendered by the
 # release's postinstall, `sounds ensure-bank`) and its ear (the petting classifier on the
-# onboard mic). All optional equipment: a board without the codec walks identically and
+# onboard mic). All optional equipment: a board without audio hardware walks identically and
 # stays quiet, and nothing here reaches a health verdict.
 # enabled = true
 
-# ALSA playback device — the TLV320AIC3104 codec that setup-board.sh brings up. The mic
-# worker captures from "<device>,0".
+# ALSA card provided by the board's microduck-i2s3 device-tree overlay. Playback uses the
+# MAX98357A speaker amp; the mic worker captures from "<device>,0".
 device = "plughw:CARD=microducki2s3,DEV=0"
 
 # Where the voice bank lives.
