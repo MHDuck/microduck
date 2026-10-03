@@ -161,9 +161,18 @@ impl Sensor {
                             0x08 => 12,
                             0x05 => 14,
                             0x01 | 0x02 => 10,
-                            _ => break,
+                            // Other SH-2 reports may share this packet. Resync one byte at
+                            // a time, matching the Pi reader, so they do not hide a later
+                            // gyro or rotation-vector report in the same payload.
+                            _ => {
+                                offset += 1;
+                                continue;
+                            }
                         };
-                        if offset + size > length { break; }
+                        if offset + size > length {
+                            offset += 1;
+                            continue;
+                        }
                         let word = |i: usize| f64::from(i16::from_le_bytes([buffer[offset + i], buffer[offset + i + 1]]));
                         match id {
                             0x08 | 0x05 if quat_sequence != Some(buffer[offset + 1]) => {
