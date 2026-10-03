@@ -111,10 +111,17 @@ fetch_deb() {
     fi
     tmp="/tmp/${package}.deb"
     say "fetching ${package}"
-    curl -fsSL -o "$tmp" "$url" || die "could not download ${url}
+    local_file="${DUCK_LOCAL_DIR:+${DUCK_LOCAL_DIR}/deploy/}"
+    local_file="${local_file:-/var/lib/robot/dependencies/}${url##*/}"
+    if [ -f "$local_file" ]; then
+        cp "$local_file" "$tmp"
+    else
+        curl -fL --progress-bar --connect-timeout 15 --max-time 90 \
+            --speed-limit 1024 --speed-time 60 -o "$tmp" "$url" || die "could not download ${url}
   The camera works without 3A — green, noisy and fixed-exposure — so this is not fatal to the
   robot, but it is fatal to image quality. Check the board's network and re-run:
     sudo ${SELF}"
+    fi
     dpkg -i "$tmp" || die "dpkg could not install ${tmp}"
     rm -f "$tmp"
 }

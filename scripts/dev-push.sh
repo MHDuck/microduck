@@ -87,6 +87,8 @@ if [ "$PACKAGE_ONLY" = yes ]; then
     REMOTE_DIR=unused
 fi
 
+sh scripts/fetch-board-deps.sh
+
 # ── which board, and why a name beats an address ───────────────────────────────────────
 #
 # An address moves. A reflash, a router reboot or a different network hands the board a new
@@ -444,6 +446,12 @@ ssh "$BOARD" "rm -rf '$REMOTE_DIR' && mkdir -p '$REMOTE_DIR'"
 # build, so there is no delta to exploit, and this needs nothing on the board that ssh did not
 # already bring.
 scp -q dist/* "$BOARD:$REMOTE_DIR/"
+ssh "$BOARD" "mkdir -p '$REMOTE_DIR/dependencies'"
+scp -q deploy/onnxruntime-linux-aarch64-*.tgz deploy/microduck-gst-plugins-*.tar.gz* \
+    deploy/librockchip-mpp1_*.deb deploy/librga2_*.deb \
+    deploy/camera_engine_rkaiq_rk3568_arm64-fixed.deb deploy/rockchip-iqfiles-rk356x_*.deb \
+    deploy/librknnrt-*.so "$BOARD:$REMOTE_DIR/dependencies/"
+ssh -t "$BOARD" "sudo mkdir -p /var/lib/robot/dependencies && sudo cp '$REMOTE_DIR/dependencies/'* /var/lib/robot/dependencies/"
 
 if [ "$BOOTSTRAP" = yes ]; then
     # For a board whose *installed* `updaterd` predates `apply --from` and therefore cannot be

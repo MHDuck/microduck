@@ -28,7 +28,7 @@ CACHE="${SYSROOT}/.cache"
 # Debian 13. The robot runs Armbian on a trixie userland and takes GStreamer from the Debian
 # archive — `apt-cache policy` on a provisioned board shows deb.debian.org and security.debian.org
 # with no Armbian multimedia overlay — so this is the same archive the board installs from.
-MIRROR="${DUCK_DEBIAN_MIRROR:-http://deb.debian.org/debian}"
+MIRROR="${DUCK_DEBIAN_MIRROR:-https://deb.debian.org/debian}"
 SUITE="${DUCK_DEBIAN_SUITE:-trixie}"
 ARCH=arm64
 TRIPLE=aarch64-linux-gnu
@@ -130,13 +130,24 @@ verify() {
     return "$bad"
 }
 
+download() {
+    url="$1"
+    dest="$2"
+    tmp="${dest}.tmp.$$"
+    if curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL -o "$tmp" "$url"; then
+        mv "$tmp" "$dest"
+    else
+        rm -f "$tmp"
+        return 1
+    fi
+}
+
 fetch() {
     install -d "$CACHE"
     index="${CACHE}/Packages"
     if [ ! -s "$index" ]; then
         say "fetching the ${SUITE}/${ARCH} package index"
-        curl -fsSL -o "${index}.gz" \
-            "${MIRROR}/dists/${SUITE}/main/binary-${ARCH}/Packages.gz" \
+        download "${MIRROR}/dists/${SUITE}/main/binary-${ARCH}/Packages.gz" "${index}.gz" \
             || die "cannot fetch the package index from ${MIRROR}"
         gunzip -f "${index}.gz" || die "cannot gunzip the package index"
     fi
@@ -153,7 +164,7 @@ fetch() {
   and renamed libglib2.0-0 to libglib2.0-0t64. If this is a rename, fix PACKAGES above."
 
         deb="${CACHE}/$(basename "$rel")"
-        [ -s "$deb" ] || curl -fsSL -o "$deb" "${MIRROR}/${rel}" \
+        [ -s "$deb" ] || download "${MIRROR}/${rel}" "$deb" \
             || die "cannot download ${MIRROR}/${rel}"
 
         # `ar x` writes into the working directory, so each unpack gets its own.

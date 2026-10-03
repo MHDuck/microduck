@@ -20,6 +20,8 @@
 # them together, so the operator was the glue: fetch, run, fetch, run, reboot, re-run, re-run,
 # fetch, run. Nine steps of clerical work with a reboot in the middle, every one of which is
 # an opportunity to do them in the wrong order or forget the second half of the wifi cutover.
+# `DUCK_SETUP_ONLY=1` runs the same environment flow on an existing install and leaves its release
+# alone.
 #
 # ## Why it always asks for a reboot
 #
@@ -142,6 +144,8 @@ RESUMED=0
 
 # Stop before the reboot instead of taking it, for anyone who wants the steps one at a time.
 NO_REBOOT="${DUCK_NO_REBOOT:-}"
+# Refresh OS and hardware setup on a board that already has a daemon release, without reinstalling it.
+SETUP_ONLY="${DUCK_SETUP_ONLY:-}"
 # Where a dev key is parked across the reboot. A public key, so 0644 is right; the point of
 # moving it is only that /tmp does not survive the reboot this asks for.
 DEV_KEY_KEPT="${STATE_DIR}/team.dev.pub"
@@ -220,6 +224,7 @@ save_state() {
         kv DUCK_WEIRD_BLE "$WEIRD_BLE"
         kv DUCK_GSTREAMER "$GSTREAMER"
         kv DUCK_RKAIQ "$RKAIQ"
+        kv DUCK_SETUP_ONLY "$SETUP_ONLY"
         kv DUCK_LOCAL_DIR "${DUCK_LOCAL_DIR:-}"
         # `PROVISION_*` for the two that are not environment knobs, so sourcing this file cannot
         # set something an operator could also have exported.
@@ -240,6 +245,7 @@ load_state() {
     WEIRD_BLE="${ENV_WEIRD_BLE:-${DUCK_WEIRD_BLE:-}}"
     GSTREAMER="${ENV_GSTREAMER:-${DUCK_GSTREAMER:-1}}"
     RKAIQ="${ENV_RKAIQ:-${DUCK_RKAIQ:-1}}"
+    SETUP_ONLY="${DUCK_SETUP_ONLY:-$SETUP_ONLY}"
     export DUCK_LOCAL_DIR="${ENV_LOCAL_DIR:-${DUCK_LOCAL_DIR:-}}"
     # No `ENV_` mirror for the name, unlike its neighbours. Theirs exist because sourcing this file
     # sets the very `DUCK_*` variables the operator's environment did, so the typed value has to be
@@ -429,7 +435,8 @@ EOF
 
 phase_one() {
     say "phase 1: board and network"
-    if [ -n "${DUCK_LOCAL_DIR:-}" ] && [ -L /opt/robot/daemon/current ] && [ -z "$FORCE_REINSTALL" ]; then
+    if [ -n "${DUCK_LOCAL_DIR:-}" ] && [ -L /opt/robot/daemon/current ] \
+        && [ -z "$FORCE_REINSTALL" ] && [ "$SETUP_ONLY" != 1 ]; then
         die "a release is already installed; use scripts/dev-push.sh for updates"
     fi
     # Before anything is changed: a mistyped dev-key path should cost nothing at all, and this
@@ -439,7 +446,7 @@ phase_one() {
 
     tmp=/tmp/setup-board.sh
     fetch setup-board.sh "$tmp"
-    DUCK_WEIRD_BLE="$WEIRD_BLE" sh "$tmp"
+    DUCK_BOARD_STAGING=1 DUCK_WEIRD_BLE="$WEIRD_BLE" sh "$tmp"
 
     tmp=/tmp/migrate-network.sh
     fetch migrate-network.sh "$tmp"
@@ -471,7 +478,11 @@ EOF
 }
 
 phase_two() {
-    say "phase 2: confirm the board, then install the daemon"
+    if [ "$SETUP_ONLY" = 1 ]; then
+        say "phase 2: finish board environment setup"
+    else
+        say "phase 2: confirm the board, then install the daemon"
+    fi
 
     # Use the same local scripts on both sides of the reboot.
     tmp=/tmp/setup-board.sh
@@ -526,6 +537,12 @@ phase_two() {
         sh "$tmp"
     fi
 
+    if [ "$SETUP_ONLY" = 1 ]; then
+        name_the_robot
+        finish
+        return 0
+    fi
+
     tmp=/tmp/install.sh
     fetch install.sh "$tmp"
 
@@ -569,9 +586,13 @@ ${_stored}"
 # Remove the temporary provisioning state.
 finish() {
     rm -f "$STATE"
-    say "provisioning complete; removed ${STATE}"
-
-    say "updates use the local release directory"
+    if [ "$SETUP_ONLY" = 1 ]; then
+        say "board environment setup complete; existing daemon release left unchanged"
+        say "removed ${STATE}"
+    else
+        say "provisioning complete; removed ${STATE}"
+        say "updates use the local release directory"
+    fi
 
     if [ "$RESUMED" = 1 ]; then
         # Nobody is reading this as it happens; it is being written to $LOG for whoever logs in
@@ -619,7 +640,10 @@ main() {
         fi
         DUCK_LOCAL_DIR="$(cd "${DUCK_LOCAL_DIR:-$(dirname "$0")/..}" && pwd)"
         export DUCK_LOCAL_DIR
-        [ -f "$DUCK_LOCAL_DIR/dist/manifest.json" ] || die "local signed release is missing; run scripts/dev-push.sh --package-only first"
+        if [ "$SETUP_ONLY" != 1 ]; then
+            [ -f "$DUCK_LOCAL_DIR/dist/manifest.json" ] \
+                || die "local signed release is missing; run scripts/dev-push.sh --package-only first"
+        fi
         persist_self
         phase_two
         return 0
@@ -627,7 +651,10 @@ main() {
 
     DUCK_LOCAL_DIR="$(cd "${DUCK_LOCAL_DIR:-$(dirname "$0")/..}" && pwd)"
     export DUCK_LOCAL_DIR
-    [ -f "$DUCK_LOCAL_DIR/staged/updaterd" ] && [ -f "$DUCK_LOCAL_DIR/dist/manifest.json" ] || die "local signed release is missing; run scripts/dev-push.sh --package-only first"
+    if [ "$SETUP_ONLY" != 1 ]; then
+        [ -f "$DUCK_LOCAL_DIR/staged/updaterd" ] && [ -f "$DUCK_LOCAL_DIR/dist/manifest.json" ] \
+            || die "local signed release is missing; run scripts/dev-push.sh --package-only first"
+    fi
     persist_self
     phase_one
 }

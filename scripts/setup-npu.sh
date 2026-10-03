@@ -204,8 +204,15 @@ if [ -f "$LIB" ] && [ "$installed" = "$RUNTIME" ]; then
 else
     say "fetching librknnrt.so ${RUNTIME}"
     tmp=$(mktemp /tmp/librknnrt.XXXXXX)
-    curl -fsSL -o "$tmp" "$URL" || die "could not download ${URL}
+    local_file="${DUCK_LOCAL_DIR:+${DUCK_LOCAL_DIR}/deploy/}"
+    local_file="${local_file:-/var/lib/robot/dependencies/}librknnrt-${RUNTIME}.so"
+    if [ -f "$local_file" ]; then
+        cp "$local_file" "$tmp"
+    else
+        curl -fL --progress-bar --connect-timeout 15 --max-time 90 \
+            --speed-limit 1024 --speed-time 60 -o "$tmp" "$URL" || die "could not download ${URL}
   Check the tag exists, and that this board has a route to the internet."
+    fi
     # A truncated download is a segfault at the first inference rather than an error, so the file is
     # checked for being an aarch64 shared object before it is allowed to become the runtime.
     case "$(head -c 20 "$tmp" | od -An -tx1 | tr -d ' \n')" in

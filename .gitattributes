@@ -1,0 +1,4 @@
+*.sh text eol=lf
+hooks/* text eol=lf
+scripts/robot-rescue text eol=lf
+scripts/robot-boot-check text eol=lf

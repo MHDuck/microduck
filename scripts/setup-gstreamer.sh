@@ -455,7 +455,15 @@ install_rockchip_userspace() {
         "m/mpp/librockchip-mpp1_${MPP_VERSION}_arm64.deb" \
         "libr/librga/librga2_${RGA_VERSION}_arm64.deb"
     do
-        curl -fsSL -o "${tmp}/$(basename "$path")" "${RADXA_POOL}/${path}" || ok=0
+        local_file="${DUCK_LOCAL_DIR:+${DUCK_LOCAL_DIR}/deploy/}"
+        local_file="${local_file:-/var/lib/robot/dependencies/}$(basename "$path")"
+        if [ -f "$local_file" ]; then
+            cp "$local_file" "${tmp}/$(basename "$path")" || ok=0
+        else
+            curl -fL --progress-bar --connect-timeout 15 --max-time 90 \
+                --speed-limit 1024 --speed-time 60 \
+                -o "${tmp}/$(basename "$path")" "${RADXA_POOL}/${path}" || ok=0
+        fi
     done
     if [ "$ok" = 1 ]; then
         dpkg -i "${tmp}"/*.deb >/dev/null 2>&1 || ok=0
@@ -489,8 +497,19 @@ install_plugins() {
     # Warn rather than die: the packages and the udev rule above are done and still valuable, and
     # the report below will show the elements missing. A hard stop here would also make a network
     # blip look like a broken script.
-    if ! curl -fsSL -o "${tmp}/${name}.tar.gz" "${base}/${name}.tar.gz" \
-        || ! curl -fsSL -o "${tmp}/${name}.tar.gz.sha256" "${base}/${name}.tar.gz.sha256"; then
+    local_dir="${DUCK_LOCAL_DIR:+${DUCK_LOCAL_DIR}/deploy}"
+    local_dir="${local_dir:-/var/lib/robot/dependencies}"
+    if [ -f "${local_dir}/${name}.tar.gz" ] || [ -f "${local_dir}/${name}.tar.gz.sha256" ]; then
+        if ! cp "${local_dir}/${name}.tar.gz" "${local_dir}/${name}.tar.gz.sha256" "$tmp/"; then
+            rm -rf "$tmp"
+            warn "both ${name}.tar.gz and ${name}.tar.gz.sha256 are required in ${local_dir}"
+            return 0
+        fi
+        say "using local GStreamer plugins: ${local_dir}/${name}.tar.gz"
+    elif ! curl -fL --progress-bar --connect-timeout 15 --max-time 90 \
+        --speed-limit 1024 --speed-time 60 -o "${tmp}/${name}.tar.gz" "${base}/${name}.tar.gz" \
+        || ! curl -fL --progress-bar --connect-timeout 15 --max-time 15 \
+        -o "${tmp}/${name}.tar.gz.sha256" "${base}/${name}.tar.gz.sha256"; then
         rm -rf "$tmp"
         warn "could not download ${name} from ${base}
   Hardware encoding and webrtcsink will be unavailable; everything else here is done. Check the

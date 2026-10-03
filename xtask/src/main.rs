@@ -824,6 +824,13 @@ fn append_bytes(
     bytes: &[u8],
     mode: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let normalized;
+    let bytes = if bytes.starts_with(b"#!") {
+        normalized = std::str::from_utf8(bytes)?.replace("\r\n", "\n");
+        normalized.as_bytes()
+    } else {
+        bytes
+    };
     let mut header = tar::Header::new_gnu();
     header.set_size(bytes.len() as u64);
     header.set_mode(mode);

@@ -96,9 +96,8 @@ MIGRATE="/tmp/${MIGRATE_NAME}"
 MIGRATE_SELF=/usr/local/sbin/robot-migrate-network
 NET_CHECK_UNIT=/etc/systemd/system/robot-net-check.service
 
-# Only what `robotd` needs. The prototype also enables i2c-gpio-pihat, aic3104-pihat and a
-# camera overlay; none apply here — IMU 走 /dev/i2c-imu（i2c4），舵机总线无 IMU，and
-# `robotd` owns no camera or audio.
+# The camera overlay is configured separately for `mediad`; `robotd` itself owns no camera or
+# audio. The IMU rides /dev/i2c-imu (I2C4), separate from the servo bus.
 REQUIRED_OVERLAY=uart2-m0
 
 # The IMU's I²C bus. i2c4 is the RK3566 controller behind the VDD_I2C pins on header 27/28
@@ -295,9 +294,16 @@ install_onnxruntime() {
     tmp="$(mktemp -d)"
     say "installing ONNX Runtime ${ONNX_VERSION}"
 
-    if ! curl -fsSL -o "${tmp}/ort.tgz" "$url"; then
+    archive="${DUCK_LOCAL_DIR}/deploy/onnxruntime-linux-aarch64-${ONNX_VERSION}.tgz"
+    if [ -f "$archive" ]; then
+        say "using local ONNX Runtime archive: ${archive}"
+        cp "$archive" "${tmp}/ort.tgz"
+    elif ! curl -fL --progress-bar --connect-timeout 15 --max-time 300 \
+        --speed-limit 1024 --speed-time 60 -o "${tmp}/ort.tgz" "$url"; then
         rm -rf "$tmp"
         die "cannot download ONNX Runtime from ${url}
+  Download it on your computer and place it at deploy/onnxruntime-linux-aarch64-${ONNX_VERSION}.tgz,
+  then run provisioning again to transfer it with the local payload.
   robotd needs it to run a policy. Install it by hand into ${ONNX_LIB_DIR}, or point
   ORT_DYLIB_PATH at wherever it lives."
     fi
@@ -793,6 +799,18 @@ configure_camera() {
         return 0
     fi
 
+    if grep -Eq '^overlay_prefix=' "$ENV_TXT"; then
+        if ! grep -Eq '^overlay_prefix=rk3568$' "$ENV_TXT"; then
+            say "camera: setting overlay_prefix=rk3568"
+            sed -i 's/^overlay_prefix=.*/overlay_prefix=rk3568/' "$ENV_TXT"
+            needs_reboot=1
+        fi
+    else
+        say "camera: setting overlay_prefix=rk3568"
+        printf '\noverlay_prefix=rk3568\n' >> "$ENV_TXT"
+        needs_reboot=1
+    fi
+
     if [ ! -f "$dst" ] || ! cmp -s "$src" "$dst"; then
         say "camera: mirroring ${cam}.dtbo under the rk3568- prefix"
         cp "$src" "$dst"
@@ -1069,6 +1087,19 @@ EOF
     printf '  sudo DUCK_LOCAL_DIR="%s" sh /tmp/install.sh\n' "$DUCK_LOCAL_DIR"
 }
 
+configure_apt_mirrors() {
+    for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+        [ -f "$source" ] || continue
+        grep -Eq 'https?://(deb|security)\.debian\.org([/[:space:]]|$)' "$source" || continue
+        [ -f "${source}.before-cn.bak" ] || cp -p "$source" "${source}.before-cn.bak"
+        sed -E -i \
+            -e 's@https?://deb\.debian\.org(/|[[:space:]]|$)@https://mirrors.tuna.tsinghua.edu.cn\1@g' \
+            -e 's@https?://security\.debian\.org(/debian-security|/debian)?/?([[:space:]]|$)@https://mirrors.tuna.tsinghua.edu.cn/debian-security\2@g' \
+            "$source"
+        say "using Debian mirrors in China: ${source}"
+    done
+}
+
 configure_feetech() {
     [ -f "$ENV_TXT" ] || die "${ENV_TXT} is required"
     grep -q '^fdtfile=rockchip/rk3566-radxa-zero3.dtb$' "$ENV_TXT" \
@@ -1126,13 +1157,15 @@ configure_feetech() {
 main() {
     check_environment
     persist_self
+    configure_apt_mirrors
     configure_feetech
+    configure_camera "$(uname -r)"
     check_network
     free_motor_port
     configure_bluetooth
     install_onnxruntime
     say "Feetech: UART4, BNO085 on I2C3, ToF on I2C4, microduck-i2s3 audio"
-    if [ "$needs_reboot" = 1 ]; then
+    if [ "$needs_reboot" = 1 ] || [ "${DUCK_BOARD_STAGING:-0}" = 1 ]; then
         say "boot configuration changed; reboot required"
     else
         for device in "$MOTOR_PORT" /dev/i2c-3 /dev/i2c-4; do

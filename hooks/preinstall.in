@@ -96,11 +96,17 @@ install_onnx() {
     trap "rm -rf '$tmp'" EXIT INT TERM
 
     say "fetching ONNX Runtime ${ONNX_TARGET}"
-    curl -fsSL --max-time "$CURL_MAX_TIME" -o "${tmp}/ort.tgz" "$url" \
+    archive="/var/lib/robot/dependencies/onnxruntime-linux-aarch64-${ONNX_TARGET}.tgz"
+    if [ -f "$archive" ]; then
+        cp "$archive" "${tmp}/ort.tgz"
+    else
+        curl -fL --progress-bar --connect-timeout 15 --max-time "$CURL_MAX_TIME" \
+            --speed-limit 1024 --speed-time 60 -o "${tmp}/ort.tgz" "$url" \
         || die "cannot download ONNX Runtime ${ONNX_TARGET} from ${url}
   This board needs it to run a policy, and this release cannot start without one. With
   network access, re-running the update will retry. Otherwise install it by hand, or run
   scripts/setup-board.sh."
+    fi
 
     tar -xzf "${tmp}/ort.tgz" -C "$tmp" || die "cannot unpack ONNX Runtime"
 

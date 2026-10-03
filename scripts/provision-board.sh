@@ -15,6 +15,8 @@
 # by an unknown interval and a guess about when to log back in. This waits for the board to
 # come back, streams the log the unattended half writes, and ends on `robotctl health` — so
 # provisioning is one command with continuous output instead of three with a gap.
+# When a daemon release already exists, the same entrypoint refreshes board environment only;
+# it does not replace that release.
 #
 #   --name NAME       name the robot, at the end of provisioning: `--name Ducky`. Optional —
 #                     without it the board names itself `duck-<four hex>` from its SoC serial,
@@ -102,6 +104,7 @@ WEIRD_BLE=""
 NO_GSTREAMER=""
 NO_RKAIQ=""
 PAUSE_BTD=""
+SETUP_ONLY=""
 # The name to give the robot. Not `BLE_NAME` below, which points the other way: the name this board
 # already answers to, used to find it again after the reboot.
 ROBOT_NAME=""
@@ -637,7 +640,12 @@ fi
 
 # ── put what the board needs where the board can reach it ────────────────────
 
-if [ -n "$DEV_KEY" ]; then
+if rsh "test -L /opt/robot/daemon/current"; then
+    SETUP_ONLY=1
+    say "an installed release was found; this run will refresh board environment only"
+fi
+
+if [ -n "$DEV_KEY" ] && [ -z "$SETUP_ONLY" ]; then
     say "sending the dev key"
     scp -q -o StrictHostKeyChecking=accept-new "$DEV_KEY" "$(scp_target /tmp/team.dev.pub)" \
         || die "could not copy ${DEV_KEY} to ${HOST}"
@@ -652,7 +660,11 @@ scp -q "$_local" "$(scp_target /tmp/provision.sh)" || die "could not copy provis
 _root="$(cd "$(dirname "$0")/.." && pwd)"
 _remote_local="/var/lib/robot/provision-local-$(date +%s)-$$"
 _archive="$(mktemp)"
-tar -czf "$_archive" -C "$_root" scripts deploy dist staged/updaterd
+if [ -n "$SETUP_ONLY" ]; then
+    tar -czf "$_archive" -C "$_root" scripts deploy
+else
+    tar -czf "$_archive" -C "$_root" scripts deploy dist staged/updaterd
+fi
 scp -q "$_archive" "$(scp_target /tmp/microduck-local.tar.gz)" || die "could not copy local payload"
 rm -f "$_archive"
 
@@ -663,7 +675,8 @@ say "starting provisioning — the board will reboot and this will wait for it"
 echo
 
 _env="DUCK_LOCAL_DIR='${_remote_local}'"
-[ -z "$DEV_KEY" ] || _env="${_env} DUCK_DEV_KEY=/tmp/team.dev.pub"
+[ -z "$SETUP_ONLY" ] || _env="${_env} DUCK_SETUP_ONLY=1"
+[ -z "$DEV_KEY" ] || [ -n "$SETUP_ONLY" ] || _env="${_env} DUCK_DEV_KEY=/tmp/team.dev.pub"
 [ -z "$WEIRD_BLE" ] || _env="${_env} DUCK_WEIRD_BLE=1"
 [ -z "$PAUSE_BTD" ]  || _env="${_env} DUCK_PAUSE_BTD=1"
 [ -z "$NO_GSTREAMER" ] || _env="${_env} DUCK_GSTREAMER=0"
@@ -678,12 +691,15 @@ if [ -n "$ROBOT_NAME" ]; then
     _args=" --name '$(printf '%s' "$ROBOT_NAME" | sed "s/'/'\\\\''/g")'"
 fi
 
-# `-t` so sudo can prompt for a password, and the exit status deliberately ignored: this
-# command ends by rebooting the machine it is running on, so ssh reporting a dropped connection
-# is the *expected* outcome. Whether it worked is decided below, by looking at the board.
+# A reboot can disconnect SSH (255); other failures must stop provisioning here.
 _stage="sudo install -d -m 755 '${_remote_local}' && sudo tar -xzf /tmp/microduck-local.tar.gz -C '${_remote_local}' && "
+_phase_status=0
 ssh -t -o StrictHostKeyChecking=accept-new "$HOST" \
-    "${_stage}sudo env ${_env} sh /tmp/provision.sh${_args}" || true
+    "${_stage}sudo env ${_env} sh /tmp/provision.sh${_args}" || _phase_status=$?
+case "$_phase_status" in
+    0|255) ;;
+    *) die "provisioning stopped on ${HOST} (exit ${_phase_status}); fix the error above and re-run" ;;
+esac
 
 echo
 say "waiting for ${HOST} to come back (up to ${BOOT_TIMEOUT}s)"
@@ -856,7 +872,13 @@ while :; do
 done
 
 echo
-say "provisioning finished"
+rsh "command -v robotctl >/dev/null 2>&1" \
+    || die "robotctl is not installed or the board is unreachable; provisioning completion could not be verified"
+if [ -n "$SETUP_ONLY" ]; then
+    say "board environment refreshed; installed daemon release is unchanged"
+else
+    say "provisioning finished"
+fi
 
 # The health report is the point of all of it, and it is also the thing most likely to have
 # something to say — a bench board with no servos powered reports unhealthy, correctly.

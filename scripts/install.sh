@@ -806,6 +806,15 @@ main() {
     resolve_bootstrap_asset
     install_config
     install_dev_key
+    mkdir -p /var/lib/robot/dependencies
+    for dependency in "$DUCK_LOCAL_DIR"/deploy/onnxruntime-linux-aarch64-*.tgz \
+        "$DUCK_LOCAL_DIR"/deploy/microduck-gst-plugins-*.tar.gz* \
+        "$DUCK_LOCAL_DIR"/deploy/librockchip-mpp1_*.deb "$DUCK_LOCAL_DIR"/deploy/librga2_*.deb \
+        "$DUCK_LOCAL_DIR"/deploy/camera_engine_rkaiq_rk3568_arm64-fixed.deb \
+        "$DUCK_LOCAL_DIR"/deploy/rockchip-iqfiles-rk356x_*.deb "$DUCK_LOCAL_DIR"/deploy/librknnrt-*.so; do
+        [ -f "$dependency" ] || continue
+        install -m 644 "$dependency" /var/lib/robot/dependencies/
+    done
     bootstrap_first_release
     # Straight after, not at install_units: the release's postinstall hook has already enabled and
     # started everything by this point.
