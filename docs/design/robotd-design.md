@@ -212,7 +212,7 @@ Where the data goes, once per period:
                       ▼
               Observation::build  ◄──── Command ◄── gate(deadman) ◄── intent snapshot
                      │              (twist, head, body = nominal)
-                     │  [f32; 61]
+                     │  [f32; 51]
                      ▼
               Policy::infer ──── roulade > kick > ground pick > sit/rise >
                      │           stand (by |twist|, or forced) > walk
@@ -446,38 +446,15 @@ bytes; the write is `WritePosEx` at `0x29` × 7 bytes. Registers below are the o
 
 ### 2.2 One observation builder
 
-Every alpha policy is `obs[1,61] → actions[1,14]` — verified across walking, standing, ground
-pick, ball kick and sit. So there is exactly one layout:
+The only default model is Raspberry Pi `walk.onnx`, with `obs[1,51] → actions[1,14]`:
 
 ```
-[ gyro(3) | projected_gravity(3) | joint_pos(14) | joint_vel(14) | last_action(14) | command(13) ]
-                                                                    command = vel(3) + head(4) + body(6)
+[ sensor_gyro(3) | sensor_gravity(3) | joint_pos(14) | joint_vel(14) | last_action(14) | twist(3) ]
 ```
 
-Joints exclude the mouth throughout; actions map back into 15 motor slots with index 9 left at
-zero. The 51/54D legacy, 49D wheeled and 85D tracking layouts go away with the variants.
-
-The command block, which was the only part in doubt, is settled — read out of the prototype's
-`control_step` rather than guessed:
-
-```text
-48..51   vx, vy, vyaw
-51..55   neck_pitch, head_pitch, head_yaw, head_roll
-55..57   body x, y      — hardcoded zero, unbound in training
-57..60   body z, roll, pitch
-60       body yaw       — hardcoded zero, unbound in training
-```
-
-Three things about it are individually plausible and wrong:
-
-1. **All-zero body is the nominal encoding**, not a placeholder — x, y and yaw are literally
-   hardcoded zero as "unbound", and z/roll/pitch are zero unless body-pose mode is active.
-2. **Head targets ride in the command and are not added on top of the policy output.** The
-   prototype does both in different modes and gates the post-hoc addition behind
-   `if !new_cmd_obs`, commented "head\_offsets are a COMMAND fed via the obs vector instead —
-   don't double-add it here". Doing both bends the head twice.
-3. **The body block is ordered `z, roll, pitch`** — not `z, pitch, roll`. Swapping the last
-   two tilts the robot sideways when asked to lean forward.
+The IMU values preserve the mounted sensor frame used by Pi `walk.py`; safety continues to
+use the trunk-frame IMU values. Joint order and home pose match the model metadata. The mouth
+is excluded from the observation and action vector.
 
 ### 2.3 The policy
 
@@ -507,13 +484,12 @@ Policy files come from paths in the params file, defaulting into the release dir
 normal update carries the policy trained against the binary, and a dev points a path at their
 own `.onnx` and iterates without cutting a release.
 
-Everything is validated at **load**, not at inference: observation width, action count, and
-whether ONNX Runtime is present at all. Every net must be 61-input, 14-output, checked at load
-rather than discovered mid-stride. The runtime also ships a 51-D family using the legacy
-3-value command; those load only under its `--new-cmd-obs=false` path, and `robotd` refuses
-them with `observation width is 51, expected 61`. A warm-up inference runs before the loop
-starts, which both pays the first-call cost off the hot path — where it would look identical to
-a missed deadline — and proves the dylib resolved.
+Everything is validated at **load**, not at inference: observation width must be 51, action
+count must be 14, and ONNX Runtime must be present. The Pi walk model is shipped as
+`policies/walk.onnx`; optional policy slots are off by default. Old 61-input models are refused
+at load. A warm-up inference runs before the loop starts, which both pays the first-call cost
+off the hot path — where it would look identical to a missed deadline — and proves the dylib
+resolved.
 
 **`ort` panics when ONNX Runtime is missing.** It `expect`s inside `setup_api`, on a lazy path
 reachable from any API call, so it cannot be caught as an error. Left alone that killed the
@@ -535,14 +511,11 @@ every update for nothing. The trade is that a board missing it installs and star
 then cannot walk — which is why health reports the searched path.
 
 Not done, and deliberately: pre-binding the ONNX input/output tensors. The current path
-allocates a 61-float vector per inference, ~244 bytes at 50 Hz. Worth measuring on the board
+allocates a 51-float vector per inference, ~204 bytes at 50 Hz. Worth measuring on the board
 before optimising.
 
-**Carried over from the runtime because it works** — head and leg low-pass filters, action
-scale, voltage-adaptive scaling, the standing-transition gain change. These are tunables
-(§4.2), not decisions to revisit. The low-pass alphas in particular are the values the alpha
-policies are *trained* with, so they must match training or transfer degrades. The rule is not
-to regress what already runs.
+The Pi walk defaults use action scale 1.0 and no head/leg target low-pass. Those remain
+configurable for a future Pi model that specifies different post-processing.
 
 ### 2.4 Safety
 
@@ -1063,7 +1036,7 @@ way while the code around it gets simpler.
 - the limp-fall predictor fires on a fall and not on a footfall or a static tilt, and its pose
   ramp ends at the standing pose;
 - deadman zeroes velocity when intents stop;
-- **golden observation vectors** — `(inputs, expected 61-float array)` pairs exported from mjlab and
+- **golden observation vectors** — `(inputs, expected 51-float array)` pairs exported from the Pi policy path and
   committed. A wrong index in the observation does not fail loudly; it produces a plausible robot
   that falls over. Depends on an export from `microduck_brain` (§9.2).
 

@@ -416,6 +416,7 @@ cargo run -p xtask -- package \
     --include "docs/design/architecture.md=docs/architecture.md" \
     --include "docs/design/updater-design.md=docs/updater-design.md" \
     --include "deploy/README.md=docs/deploy.md" \
+    --include "policies/walk.onnx=policies/walk.onnx" \
     --include "policies/alpha_walking.onnx=policies/alpha_walking.onnx" \
     --include "policies/alpha_stand.onnx=policies/alpha_stand.onnx" \
     --include "policies/alpha_sitstand.onnx=policies/alpha_sitstand.onnx" \

@@ -28,10 +28,14 @@ pub struct ImuData {
     pub gyro: [f64; 3],
     /// Projected gravity in the trunk frame, unit vector. Upright is `[0, 0, -1]`.
     ///
-    /// This is what the policy observes, and what fall detection thresholds on.
+    /// This is what fall detection thresholds on; the policy uses `sensor_gravity`.
     pub gravity: [f64; 3],
     /// Orientation, trunk→world, scalar-first `[w, x, y, z]`.
     pub quat: [f64; 4],
+    /// Sensor-frame angular velocity consumed by the Raspberry Pi 51-D policy.
+    pub sensor_gyro: [f64; 3],
+    /// Sensor-frame projection of world +Z consumed by the Raspberry Pi 51-D policy.
+    pub sensor_gravity: [f64; 3],
 }
 
 impl Default for ImuData {
@@ -40,6 +44,8 @@ impl Default for ImuData {
             gyro: [0.0; 3],
             gravity: [0.0, 0.0, -1.0],
             quat: [1.0, 0.0, 0.0, 0.0],
+            sensor_gyro: [0.0; 3],
+            sensor_gravity: [0.0, 0.0, 1.0],
         }
     }
 }
@@ -60,6 +66,8 @@ pub struct SflpDecoder {
     /// when its orientation is simply unknown, which is the worst possible lie to tell
     /// fall detection.
     last_quat: [f64; 4],
+    /// Last sensor-frame quaternion, for the Raspberry Pi policy observation.
+    last_sensor_quat: [f64; 4],
     /// Blocks carrying a live quaternion. Gates [`SflpDecoder::ready`].
     quat_samples: u32,
     gyro_history: [[f64; 3]; 2],
@@ -86,6 +94,7 @@ impl SflpDecoder {
         Self {
             mount,
             last_quat: [1.0, 0.0, 0.0, 0.0],
+            last_sensor_quat: [1.0, 0.0, 0.0, 0.0],
             quat_samples: 0,
             gyro_history: [[0.0; 3]; 2],
             gravity_history: [[0.0, 0.0, -1.0]; 2],
@@ -132,23 +141,23 @@ impl SflpDecoder {
                 let norm = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
                 if norm > 0.5 {
                     self.last_quat = [q[0] / norm, q[1] / norm, q[2] / norm, q[3] / norm];
+                    self.last_sensor_quat = [w / norm, x / norm, y / norm, z / norm];
                     self.quat_samples = self.quat_samples.saturating_add(1);
                 }
             }
         }
 
-        // Normalise *before* the median, matching the runtime. Note the consequence: a
-        // component-wise median across three unit vectors is not itself unit-norm, so
-        // during a transient the policy sees a slightly short vector. Steady state is
-        // exact. Whether the training env expects strict unit norm is worth settling when
-        // slice 2 wires up observations — normalising after the median would guarantee it,
-        // but that is a behaviour change to a path that currently walks.
+        // Keep the safety gravity filter used by the current runtime. The policy receives
+        // the separate sensor-frame projection below, as the Raspberry Pi runtime does.
         let gravity = normalise(rotate_inverse(self.last_quat, [0.0, 0.0, -1.0]));
+        let sensor_gravity = normalise(rotate_inverse(self.last_sensor_quat, [0.0, 0.0, 1.0]));
 
         let out = ImuData {
             gyro: median3_each(&self.gyro_history, gyro),
             gravity: median3_each(&self.gravity_history, gravity),
             quat: self.last_quat,
+            sensor_gyro: gyro_sensor,
+            sensor_gravity,
         };
         self.gyro_history = [self.gyro_history[1], gyro];
         self.gravity_history = [self.gravity_history[1], gravity];

@@ -1,8 +1,7 @@
 //! The robot, as data.
 //!
-//! One variant — **alpha** — because that is the only robot that exists. Every shipped
-//! policy is `alpha_*`; v1/v1.5/v1.6 are history. A second revision becomes a second set
-//! of tables, which is honest until there is a second robot to generalise from.
+//! One robot variant — **alpha** — because that is the only hardware layout in this crate.
+//! The walking policy is the Raspberry Pi `walk.onnx` model.
 //!
 //! The numeric values here are lifted from `microduck_runtime`'s `motor.rs`, where they
 //! were measured against hardware rather than derived. Re-deriving them from a datasheet
@@ -41,39 +40,35 @@ const _: () = {
     }
 };
 
-/// The mouth is absent from every alpha policy — they are all 61-D observation, 14-action,
+/// The mouth is absent from the Raspberry Pi policy — it has a 51-D observation, 14 actions,
 /// and the action vector skips this index. Named so that omission is deliberate rather
 /// than an off-by-one someone has to rediscover.
 pub const MOUTH_INDEX: usize = 9;
 
-/// Home pose. The trunk sits ~5 mm further forward than the v1.5 pose so the CoM is over
-/// the ankle axis; the old pose biased the robot backwards.
-///
-/// Must match `HOME_FRAME` in the training env — a policy is trained against these angles
-/// and observes joint positions *relative* to them, so a discrepancy here is a constant
-/// offset on 14 observation slots.
+/// Home pose from the Raspberry Pi model metadata. The policy observes joint positions
+/// relative to these values and adds its output to the same pose.
 pub const DEFAULT_POSITION: [f64; NUM_JOINTS] = [
     0.0,     // left_hip_yaw
-    -0.0873, // left_hip_roll
-    -0.4579, // left_hip_pitch
-    -0.0049, // left_knee
+    -0.087,  // left_hip_roll
+    -0.458,  // left_hip_pitch
+    -0.005,  // left_knee
     0.4530,  // left_ankle
-    0.3491,  // neck_pitch
-    0.3491,  // head_pitch
+    0.349,   // neck_pitch
+    0.349,   // head_pitch
     0.0,     // head_yaw
     0.0,     // head_roll
     0.0,     // mouth
     0.0,     // right_hip_yaw
-    0.0873,  // right_hip_roll
-    0.4579,  // right_hip_pitch
-    0.0049,  // right_knee
+    0.087,   // right_hip_roll
+    0.458,   // right_hip_pitch
+    0.005,   // right_knee
     -0.4530, // right_ankle
 ];
 
-/// Mouth travel, radians: closed and fully open. The alpha reuses the v1.6 range,
+/// Mouth travel, radians: closed and fully open. The mechanism reuses the v1.6 range,
 /// −5°..+30°, from `microduck_runtime`'s `variant.rs`.
 ///
-/// The mouth is not part of any policy — every alpha network is 14 actions with this joint
+/// The mouth is not part of the policy — the network has 14 actions with this joint
 /// skipped — so these two numbers and [`mouth_target`] are the whole of mouth control.
 pub const MOUTH_CLOSED: f64 = -5.0 * std::f64::consts::PI / 180.0;
 pub const MOUTH_OPEN: f64 = 30.0 * std::f64::consts::PI / 180.0;
