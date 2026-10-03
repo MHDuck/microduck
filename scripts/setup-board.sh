@@ -97,15 +97,7 @@ MIGRATE_SELF=/usr/local/sbin/robot-migrate-network
 NET_CHECK_UNIT=/etc/systemd/system/robot-net-check.service
 
 # The camera overlay is configured separately for `mediad`; `robotd` itself owns no camera or
-# audio. The IMU rides /dev/i2c-imu (I2C4), separate from the servo bus.
-REQUIRED_OVERLAY=uart2-m0
-
-# The IMU's I²C bus. i2c4 is the RK3566 controller behind the VDD_I2C pins on header 27/28
-# (aliased /dev/i2c-imu by the udev rule below); the LSM6DSV16X answers at 0x6A. The overlay
-# source lives in deploy/overlays/i2c4-imu.dts and is compiled+installed by configure_imu.
-# Overridable so a board that wires the IMU elsewhere can point at a different overlay, the
-# same way REQUIRED_OVERLAY is overridable.
-REQUIRED_OVERLAY_IMU="${REQUIRED_OVERLAY_IMU:-i2c4-imu}"
+# audio. BNO085 and LSM6DSV16X share I²C3; setup-board aliases that controller as /dev/i2c-imu.
 
 needs_reboot=0
 # Whether we managed to leave a persistent copy, which decides what the reboot advice says.
@@ -228,55 +220,6 @@ ensure_overlay_word() {
 #
 # A kernel upgrade that repoints /boot/{Image,dtb,uInitrd} can undo this. If a board stops
 # seeing its motors after an apt upgrade, re-run this.
-configure_overlay() {
-    if [ ! -f "$ENV_TXT" ]; then
-        warn "no ${ENV_TXT}; not an Armbian image?
-  Enable the UART that ${MOTOR_PORT} lives on by whatever means this image provides, then
-  re-run. Everything else here will still be done."
-        return 0
-    fi
-
-    changed=0
-
-    if grep -Eq '^overlay_prefix=rk35xx$' "$ENV_TXT"; then
-        say "fixing overlay_prefix: rk35xx -> rk3568"
-        sed -i 's/^overlay_prefix=rk35xx$/overlay_prefix=rk3568/' "$ENV_TXT"
-        changed=1
-    elif ! grep -Eq '^overlay_prefix=' "$ENV_TXT"; then
-        say "setting overlay_prefix=rk3568"
-        echo 'overlay_prefix=rk3568' >> "$ENV_TXT"
-        changed=1
-    fi
-
-    if ! grep -Eq '^overlays=' "$ENV_TXT"; then
-        say "adding overlays=${REQUIRED_OVERLAY}"
-        echo "overlays=${REQUIRED_OVERLAY}" >> "$ENV_TXT"
-        changed=1
-    elif ! grep -E '^overlays=' "$ENV_TXT" | grep -qw "$REQUIRED_OVERLAY"; then
-        say "adding ${REQUIRED_OVERLAY} to overlays"
-        # Appended rather than replacing the line: whatever else this image enables is not
-        # ours to remove.
-        sed -i "s/^overlays=\(.*\)\$/overlays=\1 ${REQUIRED_OVERLAY}/" "$ENV_TXT"
-        changed=1
-    fi
-
-    # The IMU overlay is a second required word. It is its own variable so boards wired
-    # differently can repoint it, and it rides the same overlays= line the uart2-m0 word
-    # does (kept separate from uart2-m0 above so that logic is untouched). A fresh line
-    # created by the block above already carries uart2-m0; this appends the IMU word after.
-    if ! grep -E '^overlays=' "$ENV_TXT" | grep -qw "$REQUIRED_OVERLAY_IMU"; then
-        say "adding ${REQUIRED_OVERLAY_IMU} to overlays"
-        sed -i "s/^overlays=\(.*\)\$/overlays=\1 ${REQUIRED_OVERLAY_IMU}/" "$ENV_TXT"
-        changed=1
-    fi
-
-    if [ "$changed" = 1 ]; then
-        needs_reboot=1
-    else
-        say "device-tree overlays already correct"
-    fi
-}
-
 # ONNX Runtime, which `robotd` dlopens to run its gait policy.
 #
 # A board prerequisite rather than release cargo: it changes far less often than the daemon,
@@ -833,15 +776,16 @@ configure_feetech() {
     grep -q '^fdtfile=rockchip/rk3566-radxa-zero3.dtb$' "$ENV_TXT" \
         || die "this wiring requires rk3566-radxa-zero3.dtb"
 
-    # Older board setup revisions enabled an I2C TLV320 codec and a mixer
-    # service. This board uses the microduck-i2s3/MAX98357A path instead.
+    # Older board setup revisions enabled an I2C TLV320 codec and placed the
+    # IMU on I2C4. This board uses I2S3/MAX98357A and both IMUs on I2C3.
     old_overlays="$(sed -n 's/^overlays=//p' "$ENV_TXT")"
     new_overlays="$(printf '%s\n' "$old_overlays" | sed -E \
         -e 's/(^|[[:space:]])i2c3-pihat([[:space:]]|$)/ /g' \
         -e 's/(^|[[:space:]])aic3104-i2c3([[:space:]]|$)/ /g' \
+        -e 's/(^|[[:space:]])i2c4-imu([[:space:]]|$)/ /g' \
         -e 's/[[:space:]]+/ /g' -e 's/^ //' -e 's/ $//')"
     if [ "$old_overlays" != "$new_overlays" ]; then
-        say "removing legacy TLV320 overlays"
+        say "removing legacy audio and IMU overlays"
         sed -i "s/^overlays=.*/overlays=$new_overlays/" "$ENV_TXT"
         needs_reboot=1
     fi
@@ -913,7 +857,7 @@ main() {
     free_motor_port
     configure_bluetooth
     install_onnxruntime
-    say "Feetech: UART4, BNO085 on I2C3, ToF on I2C4, microduck-i2s3 audio"
+    say "Feetech: UART4, BNO085 + LSM6DSV16X on I2C3, ToF on I2C4, microduck-i2s3 audio"
     if [ "$needs_reboot" = 1 ] || [ "${DUCK_BOARD_STAGING:-0}" = 1 ]; then
         say "boot configuration changed; reboot required"
     else

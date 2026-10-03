@@ -505,7 +505,7 @@ touch /usr/local/lib/libonnxruntime.so.9.9.9
 ln -sf libonnxruntime.so.9.9.9 /usr/local/lib/libonnxruntime.so
 
 # The directories the login-shell files install into. Also the udev rules dir, which both the
-# ToF and the IMU bus udev rules write into — without it `configure_tof`/`configure_imu` would
+# ToF and the IMU bus udev rules write into — without it `configure_feetech` would
 # fail their redirect under `set -e`, so the fixture has to provide it.
 mkdir -p /etc/update-motd.d /etc/profile.d /etc/bash_completion.d /etc/udev/rules.d
 
@@ -534,21 +534,18 @@ ENV
 ONNX_VERSION=9.9.9 PATH="/stub:$PATH" sh /bin/scripts/setup-board.sh >/tmp/board.log 2>&1
 
 # The RK3566 shares overlays with the RK3568, so the wrong prefix boots happily with no
-# /dev/ttyS2 at all.
+# board-specific devices.
 grep -q "^overlay_prefix=rk3568$" /boot/armbianEnv.txt
-grep -E "^overlays=" /boot/armbianEnv.txt | grep -qw uart2-m0
-echo "    [ok] setup-board fixes overlay_prefix and enables uart2-m0"
+grep -E "^user_overlays=" /boot/armbianEnv.txt | grep -qw microduck-uart4-m1
+echo "    [ok] setup-board fixes overlay_prefix and enables the UART4 overlay"
 
-# The IMU is no longer on the servo bus — it rides i2c4 as /dev/i2c-imu. The overlay word
-# (`REQUIRED_OVERLAY_IMU`) and the udev rule are the half that is assertable here; the vendor
-# kernel/dtc that compile the .dtbo are stubbed away in this fixture, and the 0x6A presence
-# check needs a live board (`sudo i2cdetect -y 4` answering 0x6A). This is the /dev/i2c-imu
-# half of that check, and the wiring that makes the live check possible.
-grep -E "^overlays=" /boot/armbianEnv.txt | grep -qw i2c4-imu
-grep -q 'KERNELS=="fe5d0000.i2c", SYMLINK+="i2c-imu"' /etc/udev/rules.d/99-robot-i2c-imu.rules
+# Both IMUs share I2C3; the setup script aliases it as /dev/i2c-imu. The live address check
+# needs hardware (`sudo i2cdetect -y 3` should show 0x4A and 0x6A).
+grep -E "^user_overlays=" /boot/armbianEnv.txt | grep -qw microduck-i2c3-m0
+grep -q 'KERNEL=="i2c-3", SYMLINK+="i2c-imu"' /etc/udev/rules.d/99-robot-i2c-imu.rules
 # The two udev rules must not clobber each other: one file per stale name.
 grep -q 'SYMLINK+="i2c-pihat"' /etc/udev/rules.d/99-robot-i2c-pihat.rules
-echo "    [ok] setup-board enables i2c4-imu and names it /dev/i2c-imu"
+echo "    [ok] setup-board enables I2C3 for both IMUs and names it /dev/i2c-imu"
 
 # A getty *reads* the port, consuming servo replies, so every motor looks absent —
 # indistinguishable from unwired hardware and far harder to guess.
@@ -565,8 +562,8 @@ echo "    [ok] setup-board takes the kernel console off the UART"
 ONNX_VERSION=9.9.9 PATH="/stub:$PATH" sh /bin/scripts/setup-board.sh >/tmp/board2.log 2>&1
 grep -q "^overlay_prefix=rk3568$" /boot/armbianEnv.txt
 grep -q "^console=display$" /boot/armbianEnv.txt
-test "$(grep -c uart2-m0 /boot/armbianEnv.txt)" = 1
-test "$(grep -c i2c4-imu /boot/armbianEnv.txt)" = 1
+test "$(grep -c microduck-uart4-m1 /boot/armbianEnv.txt)" = 1
+test "$(grep -c microduck-i2c3-m0 /boot/armbianEnv.txt)" = 1
 echo "    [ok] setup-board is idempotent on a second run"
 
 # provision-hls.py is the servo ID/BAUD provisioning helper; it must at least import and print

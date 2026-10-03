@@ -71,7 +71,7 @@ cargo zigbuild --target aarch64-unknown-linux-gnu.2.31 -p duck-control \
 ## Copy onto the Radxa
 
 Board account used here: `radxa@<host>` (hostname `radxa-zero3` on the bench).
-UART `/dev/ttyS2` and I²C `/dev/i2c-imu` (fallback `/dev/i2c-5`) are exclusive
+UART `/dev/ttyS2` and I²C `/dev/i2c-imu` (I²C3) are exclusive
 with `robotd` — stop it first.
 
 From the **Windows** clone (PowerShell / Git Bash) or from WSL; paths are the same
@@ -88,9 +88,8 @@ ssh $BOARD 'sudo systemctl stop robotd; chmod +x ~/imu_probe ~/hls_read ~/hls_co
 On the board:
 
 ```bash
-# IMU (OpenMicroDuck). Alias first; some boards answer on i2c-5.
+# LSM6DSV16X (OpenMicroDuck), on the same I²C3 bus as the BNO085.
 ./imu_probe /dev/i2c-imu 0x6A
-# ./imu_probe /dev/i2c-5 0x6A
 # ./imu_probe --hz 50
 
 # HD1910 bus — read-only status

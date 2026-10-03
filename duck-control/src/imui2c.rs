@@ -3,7 +3,7 @@
 //! This is the linux-only half of the IMU move described in
 //! `docs/design/hd1910-i2c-imu-migration.md` §2.3: instead of the IMU riding the Dynamixel
 //! bus as a 12-byte block read at address 124, the chip is now reached over `/dev/i2c-imu`
-//! (the i2c4 bus) at 0x6A, and the host drives it with ST's official `lsm6dsv16x-rs`
+//! (the I²C3 bus) at 0x6A, and the host drives it with ST's official `lsm6dsv16x-rs`
 //! driver. The chip's on-sensor SFLP fusion still ships a game-rotation quaternion and its
 //! own gyro bias; the host only reads the FIFO and repacks the bytes into the same 12-byte
 //! block [`crate::imu::SflpDecoder`] already knows how to decode. That decoder stays
@@ -516,9 +516,8 @@ pub fn probe_who_am_i() -> Vec<ImuWho> {
 
 /// Scan `/dev/i2c-*` for an LSM6DSV16X, the same search `imu_probe` uses when no bus is given.
 ///
-/// Production wants the udev alias `/dev/i2c-imu` (i2c4). Some boards put the chip on another
-/// controller — this one answers on `/dev/i2c-5` (`fe5e0000.i2c`) — so [`crate`]-level callers
-/// fall back to this when the configured path cannot be opened or is the wrong chip.
+/// This board aliases I²C3 as `/dev/i2c-imu`. The scan remains a fallback for boards that wire
+/// the chip to another controller or use a different device number.
 pub fn scan_lsm6dsv16x() -> Vec<ImuLocation> {
     probe_who_am_i()
         .into_iter()

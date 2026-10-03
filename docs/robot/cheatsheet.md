@@ -54,8 +54,9 @@ volts and as a fraction, the hottest servo and the board's own temperature. It c
 where anything wrong gets named, whether that is `unhealthy: control loop at 43.9 Hz`, `degraded:
 no robot on the motor bus after 3 attempts` or `orientation frozen — 25 stale reads`. That last one
 is on this row and nowhere else on the frame: a chip that has stopped fusing keeps answering the
-servo bus, and the IMU is a separate device on its own I²C bus (`/dev/i2c-imu`, i2c4) — so neither
-errors and the gravity vector above holds a plausible attitude indefinitely. (Since the IMU moved
+servo bus, and the IMUs are separate devices on I²C3 (`/dev/i2c-imu`) — so neither
+errors and the gravity vector above holds a plausible attitude indefinitely. The BNO085 and
+LSM6DSV16X share I²C3; the configured `[imu].driver` chooses one for control. (Since the IMU moved
 off the servo bus, a stale IMU degrades but never fails a tick, 2026-09-04.)
 
 0% is `BATTERY_EMPTY_V`, which is where `robotd` sits the robot down and cuts power, so the figure
@@ -496,14 +497,14 @@ The ToF sensor is on I²C4, aliased `/dev/i2c-pihat`; audio uses separate I²S3
 signals. Both sensor generations are supported — a VL53L5CX and a VL53L8CX are
 interchangeable on the board, and the daemon picks the driver from an ID read.
 
-**The IMU is not on the servo bus any more (2026-09-04).** It lives on its own I²C controller,
-i2c4, aliased `/dev/i2c-imu` (`setup-board.sh` installs the `i2c4-imu` overlay and the
-`99-robot-i2c-imu.rules` udev rule). Check it by hand:
+**The IMUs are not on the servo bus.** BNO085 and LSM6DSV16X share I²C3, aliased
+`/dev/i2c-imu` by `setup-board.sh`. `robotd` currently reads the single chip selected by
+`[imu].driver`; the defaults select BNO085 at `0x4A`. Check the bus and LSM6 independently:
 
 ```
-sudo i2cdetect -y 4        # expect 0x6A (LSM6DSV16X)
+sudo i2cdetect -y 3        # expect 0x4A (BNO085) and 0x6A (LSM6DSV16X)
 ls -l /dev/i2c-imu
-imu_probe --hz 50          # or imu_probe /dev/i2c-5 0x6A if the alias is empty
+imu_probe /dev/i2c-3 0x6A
 ```
 
 Cross-compile and copy from a Windows/WSL machine:

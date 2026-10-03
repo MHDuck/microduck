@@ -918,18 +918,18 @@ impl Driver {
     }
 }
 
-/// The IMU, on its own I²C bus rather than the servo bus.
+/// The selected IMU source on I²C, separate from the servo bus.
 ///
-/// The LSM6DSV16X is reached at 0x6A by default. Production names the bus `/dev/i2c-imu`
-/// (a udev alias for i2c4). If that path cannot be opened, `robotd` scans `/dev/i2c-*` for
-/// WHO_AM_I = 0x70 the same way `imu_probe` does.
+/// OpenMicroDuck's I²C3 carries both a BNO085 (0x4A/0x4B) and an LSM6DSV16X (0x6A/0x6B).
+/// `driver` selects one source for control at a time; the LSM6 driver can scan `/dev/i2c-*`
+/// for WHO_AM_I = 0x70 if its configured address misses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Imu {
     pub driver: ImuDriver,
-    /// The i2c-dev device for the IMU bus. `/dev/i2c-imu` is the udev alias for i2c4.
+    /// The i2c-dev device for the selected IMU. The board aliases I²C3 as `/dev/i2c-imu`.
     pub bus: PathBuf,
-    /// The chip's 7-bit I²C address. The LSM6DSV16X straps 0x6A or 0x6B.
+    /// The selected chip's 7-bit address: BNO085 0x4A/0x4B, LSM6DSV16X 0x6A/0x6B.
     pub address: u8,
 }
 

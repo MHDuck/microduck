@@ -31,11 +31,9 @@ port = "/dev/ttyS4"
 driver = "hd1910"
 
 [imu]
-# OpenMicroDuck only: the IMU on its own I²C bus. Production wiring is i2c4 (pins 27/28,
-# on-board pull-ups), aliased /dev/i2c-imu by the udev rule, at 0x6A.
-# If that path cannot be opened or WHO_AM_I is not 0x70, robotd scans /dev/i2c-* the same
-# way imu_probe does — some boards answer on /dev/i2c-5. Do not point this at i2c6: 0x6A
-# there is a different device.
+# OpenMicroDuck only: I²C3 carries both IMUs. `driver` selects which single sensor robotd
+# reads for control: BNO085 at 0x4A/0x4B, or LSM6DSV16X at 0x6A/0x6B. The default below is
+# BNO085. The LSM6 driver scans /dev/i2c-* for WHO_AM_I=0x70 if the configured address misses.
 # MicroDuck (variant = "microduck") ignores this section: the IMU is imu_to_dxl at
 # Dynamixel ID 200, fetched in the same sync_read as the XL330s.
 driver = "bno085"

@@ -28,10 +28,9 @@ sudo groupadd --system robot
 sudo usermod -aG robot "$USER"
 ```
 
-Board bring-up — device-tree overlay, kernel console off the motor UART, the getty mask,
-`Privacy = device`, onnxruntime. Since 2026-09-04 this also enables the IMU's own bus: the
-`i2c4-imu` overlay (i2c4) and a udev rule that names it `/dev/i2c-imu`, so the IMU is a
-separate I²C device rather than a servo on the Dynamixel bus.
+Board bring-up — device-tree overlays, kernel console off the motor UART, the getty mask,
+`Privacy = device`, onnxruntime. It enables I²C3 for the BNO085 and LSM6DSV16X, and aliases
+the bus as `/dev/i2c-imu`.
 
 ```bash
 sudo sh ~/setup-board.sh

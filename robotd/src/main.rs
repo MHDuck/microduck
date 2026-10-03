@@ -1055,9 +1055,8 @@ fn imu_for_bus(io: &BusIo, params: &Params) -> ImuIoBox {
 /// optional equipment — a robot without one walks identically, but with fall detection and
 /// odometry-seeding gated off.
 ///
-/// Tries `[imu].bus` first (the `/dev/i2c-imu` alias). If that cannot be opened, scans
-/// `/dev/i2c-*` for WHO_AM_I=`0x70` the same way `imu_probe` does — this board's chip sits
-/// on `/dev/i2c-5`, not i2c4.
+/// Opens the single source selected by `[imu].driver`. BNO085 uses its configured bus/address;
+/// LSM6DSV16X first tries those values, then scans `/dev/i2c-*` for WHO_AM_I=`0x70`.
 fn open_imu(cfg: &params::Imu) -> ImuIoBox {
     #[cfg(target_os = "linux")]
     {

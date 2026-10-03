@@ -1,13 +1,13 @@
 //! Live LSM6DSV16X sample from the duck's I²C IMU bus.
 //!
-//! The production alias is `/dev/i2c-imu` (i2c4 @ 0x6A). Some boards put the
+//! The production alias is `/dev/i2c-imu` (i2c3 @ 0x6A). Some boards put the
 //! chip on another controller — this example scans `/dev/i2c-*` for WHO_AM_I
 //! `0x70` if you do not pass a bus.
 //!
 //! ```text
 //! cargo run -p duck-control --example imu_probe
-//! cargo run -p duck-control --example imu_probe -- /dev/i2c-5 0x6A
-//! cargo run -p duck-control --example imu_probe -- /dev/i2c-5 0x6A --hz 50
+//! cargo run -p duck-control --example imu_probe -- /dev/i2c-3 0x6A
+//! cargo run -p duck-control --example imu_probe -- /dev/i2c-3 0x6A --hz 50
 //! cargo run -p duck-control --example imu_probe -- --scan
 //! ```
 //!
@@ -40,7 +40,7 @@ const DEFAULT_HZ: f64 = 10.0;
 /// Fixed frame height so cursor-up always lands on the first row.
 const ROWS: usize = 10;
 
-/// Production default: i2c4 alias, SA0 pulled to the 0x6A pad.
+/// Production default: I²C3 alias, SA0 pulled to the 0x6A pad.
 const DEFAULT_BUS: &str = "/dev/i2c-imu";
 const DEFAULT_ADDR: u8 = 0x6A;
 
@@ -227,7 +227,7 @@ fn pick_bus() -> Result<Option<(String, u8)>, Box<dyn std::error::Error>> {
             } else {
                 eprintln!(
                     "no LSM6DSV16X (WHO_AM_I={LSM6DSV16X_ID:#04x}) at 0x6A/0x6B on /dev/i2c-*\n\
-                     pass a bus explicitly, e.g. {DEFAULT_BUS} or /dev/i2c-5"
+                     pass a bus explicitly, e.g. {DEFAULT_BUS} or /dev/i2c-3"
                 );
             }
             Ok(None)
@@ -405,8 +405,8 @@ Usage:
 --hz defaults to 10. robotd samples the IMU at 50 Hz (--hz 50).
 
 Examples:
-  imu_probe /dev/i2c-5 0x6A
-  imu_probe /dev/i2c-5 0x6A --hz 50
+  imu_probe /dev/i2c-3 0x6A
+  imu_probe /dev/i2c-3 0x6A --hz 50
   imu_probe /dev/i2c-imu 0x6A
 
 ready=false with gravity [0,0,-1] is the decoder default, not a dead chip:
