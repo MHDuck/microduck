@@ -55,28 +55,30 @@ const ROULADE_CHAIN_WINDOW: f64 = 0.15;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tuning {
-    /// Scales raw policy output before it becomes a joint offset. Pi `walk.py` uses 1.0.
+    /// Scales raw policy output before it becomes a joint offset. The prototype's current
+    /// alpha default.
     pub action_scale: f64,
     /// The standing policy is trained to be applied whole.
     pub standing_action_scale: f64,
     /// Standing runs softer, at this fraction of the running gain. `--standing-kp-ratio`.
     pub standing_gain_ratio: f64,
     pub gain: u16,
-    /// Optional first-order low-pass on the head joints. `None` is no filtering.
+    /// First-order low-pass on the head joints. `None` is no filtering. The alpha policies
+    /// are trained with 0.5 — it must match training or transfer degrades.
     pub head_lowpass: Option<f64>,
-    /// Same, for the ten leg joints.
+    /// Same, for the ten leg joints. Trained with 0.7.
     pub legs_lowpass: Option<f64>,
 }
 
 impl Default for Tuning {
     fn default() -> Self {
         Self {
-            action_scale: 1.0,
+            action_scale: 0.9,
             standing_action_scale: 1.0,
             standing_gain_ratio: 0.8,
             gain: 200,
-            head_lowpass: None,
-            legs_lowpass: None,
+            head_lowpass: Some(0.5),
+            legs_lowpass: Some(0.7),
         }
     }
 }
@@ -482,15 +484,26 @@ impl Controller {
 mod tests {
     use super::*;
 
-    /// Defaults matching Raspberry Pi `walk.py`: full raw action scale and no target filter.
+    /// The prototype's **current alpha configuration** — its built-in defaults, which the
+    /// installer deliberately passes no flags to override. The filters are ON at the values
+    /// the policies are trained with; changing any of these silently changes how the robot
+    /// moves relative to the thing it replaces.
     #[test]
-    fn the_defaults_match_the_raspberry_pi_runtime() {
+    fn the_defaults_match_the_prototype() {
         let t = Tuning::default();
-        assert_eq!(t.action_scale, 1.0);
+        assert_eq!(t.action_scale, 0.9);
         assert_eq!(t.standing_action_scale, 1.0);
         assert_eq!(t.standing_gain_ratio, 0.8);
-        assert_eq!(t.head_lowpass, None);
-        assert_eq!(t.legs_lowpass, None);
+        assert_eq!(
+            t.head_lowpass,
+            Some(0.5),
+            "trained with ACTION_LOW_PASS_HEAD_ALPHA"
+        );
+        assert_eq!(
+            t.legs_lowpass,
+            Some(0.7),
+            "trained with ACTION_LOW_PASS_LEG_ALPHA"
+        );
 
         let s = SkillTuning::default();
         assert_eq!(s.ground_pick_period, 4.0);

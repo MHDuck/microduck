@@ -525,9 +525,10 @@ pub struct PolicyParams {
     pub ground_pick: Option<PathBuf>,
     pub kick_left: Option<PathBuf>,
     pub kick_right: Option<PathBuf>,
-    /// Episodic forward roll. Requires a Raspberry Pi-format model when configured.
+    /// Episodic forward roll. Ships by default in both modes, as the prototype now does.
     pub roulade: Option<PathBuf>,
-    /// Scales raw policy output into a joint offset. Raspberry Pi walking default: 1.0.
+    /// Scales raw policy output into a joint offset. Absent resolves per mode: 0.9 walking
+    /// (the prototype's alpha default), 0.8 roller.
     pub action_scale: Option<f64>,
     pub standing_action_scale: f64,
     /// Standing runs softer, at this fraction of `gain`.
@@ -535,9 +536,12 @@ pub struct PolicyParams {
     /// Position P gain while running. Unset resolves per [`Variant`]: 32 OpenMicroDuck
     /// (HD1910 BAM Kp), 200 MicroDuck (XL330 prototype).
     pub gain: Option<u16>,
-    /// Optional first-order low-pass on head targets; off by default to match the Pi runtime.
+    /// First-order low-pass on the head joint targets, `1.0` = pass-through. Default 0.5
+    /// in both modes — the value the alpha policies are *trained* with, so it must match
+    /// or transfer degrades. (The roller preset used to ship it off; the prototype rebased
+    /// its roller line on the alpha defaults, and this follows.)
     pub head_lowpass: Option<f64>,
-    /// Same, for the ten leg joints.
+    /// Same, for the ten leg joints. Walking default 0.7.
     pub legs_lowpass: Option<f64>,
     /// One ground-pick cycle, seconds. The move ends at 70% of the cycle, as the prototype
     /// does. Absent resolves per mode: 4.0 walking, 3.0 roller (the crouch).
@@ -619,31 +623,48 @@ impl PolicyParams {
             }
         };
 
-        let walk_default = match self.mode {
-            Mode::Walk => "walk.onnx",
-            // The legacy roller model is rejected by the Pi-only 51-D loader.
-            Mode::Roller => "roller.onnx",
+        let (walk_default, stand, sitstand, ground_pick, kick) = match self.mode {
+            Mode::Walk => (
+                "alpha_walking.onnx",
+                Some("alpha_stand.onnx"),
+                Some("alpha_sitstand.onnx"),
+                Some("alpha_ground_pick.onnx"),
+                true,
+            ),
+            // The prototype's roller preset, since rebased on the alpha defaults: roller
+            // policy, crouch on the ground-pick trigger, and everything else — sit/stand,
+            // kicks, the trained low-pass — as the walking mode has it. `stand` stays
+            // unloaded, deliberately: the prototype loads the standing network in roller
+            // mode and then skips every standing transition while `roller_mode` is set, so
+            // it never runs — not loading it is the same robot without the dead session.
+            Mode::Roller => (
+                "roller.onnx",
+                None,
+                Some("alpha_sitstand.onnx"),
+                Some("roller_crouch.onnx"),
+                true,
+            ),
         };
 
         ResolvedPolicy {
             enabled: self.enabled,
             mode: self.mode,
             walk: path(&self.walk, Some(walk_default)).expect("walk always has a default"),
-            stand: path(&self.stand, None),
-            sitstand: path(&self.sitstand, None),
-            ground_pick: path(&self.ground_pick, None),
-            kick_left: path(&self.kick_left, None),
-            kick_right: path(&self.kick_right, None),
-            roulade: path(&self.roulade, None),
+            stand: path(&self.stand, stand),
+            sitstand: path(&self.sitstand, sitstand),
+            ground_pick: path(&self.ground_pick, ground_pick),
+            kick_left: path(&self.kick_left, kick.then_some("ball_kick_left.onnx")),
+            kick_right: path(&self.kick_right, kick.then_some("ball_kick_right.onnx")),
+            roulade: path(&self.roulade, Some("roulade.onnx")),
             action_scale: self.action_scale.unwrap_or(match self.mode {
-                Mode::Walk => 1.0,
+                Mode::Walk => 0.9,
                 Mode::Roller => 0.8,
             }),
             standing_action_scale: self.standing_action_scale,
             standing_gain_ratio: self.standing_gain_ratio,
             gain: self.gain.unwrap_or(variant.running_gain()),
-            head_lowpass: self.head_lowpass.filter(|a| *a < 1.0),
-            legs_lowpass: self.legs_lowpass.filter(|a| *a < 1.0),
+            head_lowpass: Some(self.head_lowpass.unwrap_or(0.5)).filter(|a| *a < 1.0),
+            legs_lowpass: Some(self.legs_lowpass.unwrap_or(0.7)).filter(|a| *a < 1.0),
             ground_pick_period: self.ground_pick_period.unwrap_or(match self.mode {
                 Mode::Walk => 4.0,
                 Mode::Roller => 3.0,
@@ -1397,22 +1418,33 @@ mod tests {
         );
     }
 
-    /// The resolved walk-mode defaults match Raspberry Pi `walk.py` and `walk.onnx`.
+    /// The resolved walk-mode defaults are the prototype's **current alpha configuration**
+    /// — the values `microduck_runtime` ships as built-in defaults, which its installer
+    /// deliberately passes no flags to override. Changing any of these silently changes how
+    /// the robot moves relative to the thing this daemon replaces.
     #[test]
-    fn walk_mode_resolves_to_the_raspberry_pi_policy() {
+    fn walk_mode_resolves_to_the_prototype_alpha_config() {
         let p = Params::default().policy.resolved();
         assert_eq!(p.mode, Mode::Walk);
-        assert_eq!(p.action_scale, 1.0);
+        assert_eq!(p.action_scale, 0.9);
         assert_eq!(p.standing_action_scale, 1.0);
         assert_eq!(p.standing_gain_ratio, 0.8, "--standing-kp-ratio");
         assert_eq!(p.gain, 32, "HD1910 BAM Kp");
-        assert_eq!(p.head_lowpass, None);
-        assert_eq!(p.legs_lowpass, None);
+        assert_eq!(
+            p.head_lowpass,
+            Some(0.5),
+            "trained with the filter ON at 0.5"
+        );
+        assert_eq!(
+            p.legs_lowpass,
+            Some(0.7),
+            "trained with the filter ON at 0.7"
+        );
         assert_eq!(p.ground_pick_period, 4.0);
         assert_eq!(p.ground_pick_action_scale, 1.0);
         assert_eq!(p.ground_pick_gain_ratio, 1.0);
         assert_eq!(p.kick_duration, 0.5);
-        assert_eq!(p.roulade_duration, 1.0);
+        assert_eq!(p.roulade_duration, 1.0, "one roll, the measured time");
         assert_eq!(p.roulade_action_scale, 1.0);
         assert_eq!(p.roulade_gain_ratio, 1.0);
         assert!(!p.voltage_adapt, "off by default in the prototype");
@@ -1423,13 +1455,16 @@ mod tests {
                 .and_then(|p| p.file_name())
                 .map(|n| n.to_string_lossy().into_owned())
         };
-        assert!(p.walk.ends_with("policies/walk.onnx"));
-        assert_eq!(name(&p.stand), None);
-        assert_eq!(name(&p.sitstand), None);
-        assert_eq!(name(&p.ground_pick), None);
-        assert_eq!(name(&p.kick_left), None);
-        assert_eq!(name(&p.kick_right), None);
-        assert_eq!(name(&p.roulade), None);
+        assert!(p.walk.ends_with("policies/alpha_walking.onnx"));
+        assert_eq!(name(&p.stand).as_deref(), Some("alpha_stand.onnx"));
+        assert_eq!(name(&p.sitstand).as_deref(), Some("alpha_sitstand.onnx"));
+        assert_eq!(
+            name(&p.ground_pick).as_deref(),
+            Some("alpha_ground_pick.onnx")
+        );
+        assert_eq!(name(&p.kick_left).as_deref(), Some("ball_kick_left.onnx"));
+        assert_eq!(name(&p.kick_right).as_deref(), Some("ball_kick_right.onnx"));
+        assert_eq!(name(&p.roulade).as_deref(), Some("roulade.onnx"));
     }
 
     /// Command smoothing matches the prototype's `--cmd-alpha` / `--head-alpha`.
@@ -1440,10 +1475,14 @@ mod tests {
         assert_eq!(c.head_alpha, 0.2);
     }
 
-    /// Roller mode retains its own walking filename and scale, without silently loading
-    /// auxiliary policies from the old model family.
+    /// One line — `mode = "roller"` — must reproduce the prototype's whole roller preset,
+    /// which its installer rebased on the alpha defaults: the roller policy and its tuning
+    /// (kp 200, scale 0.8, the crouch on the ground-pick trigger at 3 s / 0.8), and
+    /// everything else exactly as walking mode has it — sit/stand, kicks, roulade, the
+    /// trained low-pass. Only the standing network stays out (the prototype loads it and
+    /// then skips every standing transition in roller mode, so it never runs).
     #[test]
-    fn roller_mode_has_no_non_pi_auxiliary_policies_by_default() {
+    fn roller_mode_resolves_to_the_prototype_roller_preset() {
         let dir = tempfile::tempdir().unwrap();
         let path = write(dir.path(), "[policy]\nmode = \"roller\"\n");
         let p = Params::load(&path, true).unwrap().policy.resolved();
@@ -1454,16 +1493,41 @@ mod tests {
             p.stand, None,
             "the prototype never runs standing in roller mode"
         );
-        assert_eq!(p.sitstand, None);
-        assert_eq!(p.kick_left, None);
-        assert_eq!(p.kick_right, None);
-        assert_eq!(p.roulade, None);
-        assert_eq!(p.ground_pick, None);
+        assert!(
+            p.sitstand
+                .as_ref()
+                .unwrap()
+                .ends_with("alpha_sitstand.onnx"),
+            "the rebased roller line keeps the sit"
+        );
+        assert!(
+            p.kick_left
+                .as_ref()
+                .unwrap()
+                .ends_with("ball_kick_left.onnx")
+        );
+        assert!(
+            p.kick_right
+                .as_ref()
+                .unwrap()
+                .ends_with("ball_kick_right.onnx")
+        );
+        assert!(p.roulade.as_ref().unwrap().ends_with("roulade.onnx"));
+        assert!(
+            p.ground_pick
+                .as_ref()
+                .unwrap()
+                .ends_with("roller_crouch.onnx")
+        );
         assert_eq!(p.action_scale, 0.8);
         assert_eq!(p.ground_pick_period, 3.0);
         assert_eq!(p.ground_pick_action_scale, 0.8);
-        assert_eq!(p.head_lowpass, None);
-        assert_eq!(p.legs_lowpass, None);
+        assert_eq!(
+            p.head_lowpass,
+            Some(0.5),
+            "the rebased roller line keeps the trained filters"
+        );
+        assert_eq!(p.legs_lowpass, Some(0.7));
         assert_eq!(p.gain, 32, "variant default, not the drive mode");
     }
 
@@ -1509,7 +1573,11 @@ mod tests {
             p.head_lowpass, None,
             "alpha 1.0 is a pass-through, so store it as off"
         );
-        assert_eq!(p.legs_lowpass, None, "the other filter stays off by default");
+        assert_eq!(
+            p.legs_lowpass,
+            Some(0.7),
+            "the other filter keeps its default"
+        );
     }
 
     /// A typo in a key is named and ignored, and the setting it was aimed at keeps its default.

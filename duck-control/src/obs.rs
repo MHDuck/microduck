@@ -1,27 +1,54 @@
 //! The observation vector the policy sees.
 //!
-//! **This is the highest-risk code in the crate.** It is a flat array of 51 floats whose
+//! **This is the highest-risk code in the crate.** It is a flat array of 61 floats whose
 //! every index must match what the policy was trained against. A wrong offset does not fail
 //! loudly — it produces a plausible-looking robot that falls over, and the symptom looks
 //! like a tuning or timing problem rather than an indexing one.
 //!
-//! The Raspberry Pi `walk.onnx` contract is `obs[1,51] → actions[1,14]`.
+//! Every alpha policy is `obs[1,61] → actions[1,14]`, verified across walking, standing,
+//! ground pick, ball kick and sit. So there is exactly one layout, not the five the
+//! prototype carried (51/54-D legacy, 49-D wheeled, 85-D tracking are all v1/v1.5 history).
 //!
 //! ```text
 //! index   width  contents
-//! 0..3        3  gyro, mounted sensor frame, rad/s
-//! 3..6        3  projected world +Z, mounted sensor frame
+//! 0..3        3  gyro, trunk frame, rad/s
+//! 3..6        3  projected gravity, trunk frame, unit vector
 //! 6..20      14  joint position minus home pose, mouth excluded
 //! 20..34     14  joint velocity, mouth excluded
 //! 34..48     14  previous action, mouth excluded
-//! 48..51      3  vx, vy, vyaw
+//! 48..61     13  command (below)
 //! ```
+//!
+//! The command block, which is the part with no second source of truth:
+//!
+//! ```text
+//! 48..51      3  vx, vy, vyaw
+//! 51..55      4  neck_pitch, head_pitch, head_yaw, head_roll
+//! 55..57      2  body x, y      — always zero, unbound in training
+//! 57          1  body z
+//! 58          1  body roll
+//! 59          1  body pitch
+//! 60          1  body yaw       — always zero, unbound in training
+//! ```
+//!
+//! Two things about that block are easy to get wrong and were confirmed against
+//! `microduck_runtime`'s `control_step` rather than assumed:
+//!
+//!  1. **Body x, y and yaw are hardcoded zero.** They are unbound in the training
+//!     environment, so an all-zero body command is the *nominal* encoding, not a
+//!     placeholder standing in for something better.
+//!  2. **Head targets ride in the command, and are not added on top of the policy output.**
+//!     The prototype does both, in different modes, and gates the post-hoc addition behind
+//!     `if !new_cmd_obs` with the note "head_offsets are a COMMAND fed via the obs vector
+//!     instead — don't double-add it here". Doing both would bend the head twice.
+//!
+//! Note also the order inside the body block: `z, roll, pitch`, not `z, pitch, roll`.
 
 use crate::imu::ImuData;
 use crate::model::{MOUTH_INDEX, NUM_JOINTS};
 
-/// Total width of the Raspberry Pi policy observation.
-pub const OBS_LEN: usize = 51;
+/// Total width of the observation.
+pub const OBS_LEN: usize = 61;
 
 /// Actions a policy returns — the 15 joints minus the mouth.
 pub const ACTION_LEN: usize = 14;
@@ -29,9 +56,13 @@ pub const ACTION_LEN: usize = 14;
 /// Joints that appear in the observation: all but the mouth.
 pub const OBS_JOINTS: usize = NUM_JOINTS - 1;
 
+/// Width of the trailing command block.
+pub const COMMAND_LEN: usize = 13;
+
 /// What a client is asking the robot to do, in the form the policy consumes.
 ///
-/// The walk policy consumes only `twist`; head and body remain available to control logic.
+/// Held as physical units in the trunk frame — the conversion to the flat command block
+/// happens in [`Observation::build`] and nowhere else.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Command {
     /// Forward, left, yaw-rate.
@@ -144,11 +175,11 @@ impl Observation {
         let (positions, rest) = rest.split_first_chunk_mut::<OBS_JOINTS>().expect(LAYOUT);
         let (velocities, rest) = rest.split_first_chunk_mut::<OBS_JOINTS>().expect(LAYOUT);
         let (previous_action, rest) = rest.split_first_chunk_mut::<OBS_JOINTS>().expect(LAYOUT);
-        let (command_block, rest) = rest.split_first_chunk_mut::<3>().expect(LAYOUT);
+        let (command_block, rest) = rest.split_first_chunk_mut::<COMMAND_LEN>().expect(LAYOUT);
         debug_assert!(rest.is_empty(), "{LAYOUT}");
 
-        fill(gyro, imu.sensor_gyro);
-        fill(gravity, imu.sensor_gravity);
+        fill(gyro, imu.gyro);
+        fill(gravity, imu.gravity);
         let angles = policy_joints(joint_positions);
         let home = policy_joints(home_pose);
         fill(positions, std::array::from_fn(|i| angles[i] - home[i]));
@@ -158,14 +189,33 @@ impl Observation {
         // conversion — the previous action is the policy's own output fed back.
         *previous_action = *last_action;
 
-        fill(command_block, command.twist);
+        // Reads in the same order as the table, which is the point: this block is the one
+        // with no second source of truth, so it should be checkable against the docs by eye.
+        fill(
+            command_block,
+            [
+                command.twist[0],
+                command.twist[1],
+                command.twist[2],
+                command.head[0],
+                command.head[1],
+                command.head[2],
+                command.head[3],
+                0.0, // body x — unbound in training
+                0.0, // body y — unbound
+                command.body.z,
+                command.body.roll,
+                command.body.pitch,
+                0.0, // body yaw — unbound
+            ],
+        );
 
         Self { data }
     }
 
     /// Map a policy's 14 outputs onto the 15 joints, leaving the mouth untouched.
     ///
-    /// The mouth is absent from the Pi policy, so its slot stays at whatever the
+    /// The mouth is absent from every alpha policy, so its slot stays at whatever the
     /// caller had. Getting this wrong shifts every joint after index 9 by one, which is
     /// both catastrophic and completely silent.
     pub fn scatter_action(action: &[f32; ACTION_LEN]) -> [f64; NUM_JOINTS] {
@@ -189,8 +239,6 @@ mod tests {
             gyro: [1.0, 2.0, 3.0],
             gravity: [4.0, 5.0, 6.0],
             quat: [1.0, 0.0, 0.0, 0.0],
-            sensor_gyro: [1.0, 2.0, 3.0],
-            sensor_gravity: [4.0, 5.0, 6.0],
         }
     }
 
@@ -217,12 +265,12 @@ mod tests {
         )
     }
 
-    /// The widths must sum to exactly what the ONNX graph declares. The Pi policy is
-    /// `obs[1,51]`, and a mismatch is rejected by the runtime rather than misread — but it
+    /// The widths must sum to exactly what the ONNX graph declares. Every alpha policy is
+    /// `obs[1,61]`, and a mismatch is rejected by the runtime rather than misread — but it
     /// is far better to fail here than at session run time on a robot.
     #[test]
     fn the_layout_widths_sum_to_the_declared_input() {
-        assert_eq!(3 + 3 + OBS_JOINTS * 3 + 3, OBS_LEN);
+        assert_eq!(3 + 3 + OBS_JOINTS * 3 + COMMAND_LEN, OBS_LEN);
         assert_eq!(OBS_JOINTS, ACTION_LEN);
     }
 
@@ -246,7 +294,31 @@ mod tests {
         assert_eq!(d[20], 0.0, "joint_vel");
         assert_eq!(d[34], -0.5, "last_action first");
         assert_eq!(d[47], 0.75, "last_action last");
-        assert_eq!(&d[48..51], &[0.1, 0.2, 0.3], "twist only");
+        assert_eq!(&d[48..51], &[0.1, 0.2, 0.3], "twist");
+        assert_eq!(&d[51..55], &[0.4, 0.5, 0.6, 0.7], "head");
+    }
+
+    /// Body x, y and yaw are unbound in training. They must be zero regardless of what the
+    /// caller supplies, or the policy sees a signal it was never trained on.
+    #[test]
+    fn unbound_body_axes_are_always_zero() {
+        let obs = build_with(DEFAULT_POSITION, [0.0; ACTION_LEN]);
+        let d = obs.as_slice();
+        assert_eq!(d[55], 0.0, "body x");
+        assert_eq!(d[56], 0.0, "body y");
+        assert_eq!(d[60], 0.0, "body yaw");
+    }
+
+    /// The body block is ordered z, roll, pitch — *not* z, pitch, roll. The prototype maps
+    /// its 3-wide body command into the 6-wide slot in exactly this order, and swapping the
+    /// last two would tilt the robot sideways when asked to lean forward.
+    #[test]
+    fn the_body_block_is_z_roll_pitch() {
+        let obs = build_with(DEFAULT_POSITION, [0.0; ACTION_LEN]);
+        let d = obs.as_slice();
+        assert_eq!(d[57], 0.8, "body z");
+        assert_eq!(d[58], 0.9, "body roll");
+        assert_eq!(d[59], 1.0, "body pitch");
     }
 
     /// Joint positions are observed relative to the home pose. Feeding absolute angles

@@ -196,8 +196,6 @@ impl Sensor {
                                 quat: body,
                                 gyro: inverse_rotate(mount, g),
                                 gravity: inverse_rotate(body, [0.0, 0.0, -1.0]),
-                                sensor_gyro: g,
-                                sensor_gravity: inverse_rotate(q, [0.0, 0.0, 1.0]),
                             };
                             sequence += 1;
                             *latest.lock().unwrap() = Some((qt.min(gt), data, sequence));

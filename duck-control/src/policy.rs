@@ -3,7 +3,8 @@
 //! Walking and standing are chosen by the magnitude of the velocity command, exactly as
 //! `microduck_runtime` does; the skill networks — sit↔stand, ground pick, the two kicks —
 //! are selected explicitly by the scheduler in `robotd`, which owns the priority rules.
-//! Every loaded network must use the Raspberry Pi's 51-D observation layout and 14 actions.
+//! Every network shares the one 61-D observation layout, so a skill is a session choice
+//! plus a command-block encoding, never a new contract.
 //!
 //! **Everything is validated at load, not at inference.** A bundle with the wrong
 //! observation width, the wrong action count, or a missing ONNX Runtime must fail while the
