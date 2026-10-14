@@ -661,9 +661,9 @@ _root="$(cd "$(dirname "$0")/.." && pwd)"
 _remote_local="/var/lib/robot/provision-local-$(date +%s)-$$"
 _archive="$(mktemp)"
 if [ -n "$SETUP_ONLY" ]; then
-    tar -czf "$_archive" -C "$_root" scripts deploy
+    tar --exclude=deploy/sysroot -czf "$_archive" -C "$_root" scripts deploy
 else
-    tar -czf "$_archive" -C "$_root" scripts deploy dist staged/updaterd
+    tar --exclude=deploy/sysroot -czf "$_archive" -C "$_root" scripts deploy dist staged/updaterd
 fi
 scp -q "$_archive" "$(scp_target /tmp/microduck-local.tar.gz)" || die "could not copy local payload"
 rm -f "$_archive"

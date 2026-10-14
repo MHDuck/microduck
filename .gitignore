@@ -17,6 +17,7 @@ secret*
 # Release output. Contains artifacts and signatures; regenerate rather than commit.
 /dist
 /staged
+/deploy/sysroot/
 
 # Playground and scratch state (see updater/examples/playground.rs).
 /verify

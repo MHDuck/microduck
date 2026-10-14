@@ -758,10 +758,6 @@ fn run_init(params: &Params, duration: Duration) -> ExitCode {
         tracing::error!(error = %e, "motor register check failed");
         return ExitCode::FAILURE;
     }
-    if let Err(e) = io.set_torque(true) {
-        tracing::error!(error = %e, "cannot enable torque");
-        return ExitCode::FAILURE;
-    }
     // Before the ramp, not after: position_p_gain is a RAM register that survives this
     // process, so whatever was written last is what the robot stands up with. A previous fall
     // leaves `gain_limp` (50) there, and `init` would then take the robot to its home pose at
@@ -773,6 +769,16 @@ fn run_init(params: &Params, duration: Duration) -> ExitCode {
     // robot is standing up unsupported.
     if let Err(e) = io.set_gain(params.gain()) {
         tracing::error!(error = %e, gain = params.gain(), "cannot set the position gain");
+        return ExitCode::FAILURE;
+    }
+    if let Err(e) = io.read().and_then(|sensors| {
+        io.write(&duck_control::JointTargets::new(sensors.positions))
+    }) {
+        tracing::error!(error = %e, "cannot prepare the current pose");
+        return ExitCode::FAILURE;
+    }
+    if let Err(e) = io.set_torque(true) {
+        tracing::error!(error = %e, "cannot enable torque");
         return ExitCode::FAILURE;
     }
     if let Err(e) = io.interpolate_to(&DEFAULT_POSITION, duration, Duration::from_millis(20)) {
@@ -1722,7 +1728,10 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                 // Unlike `enable`, this needs no policy: "stand up" is a reasonable thing to ask of
                 // a robot with no walking network at all, and it is what a bench robot needs before
                 // anything else can be tested.
-                (Bringup::Limp, Some(sensors)) => match safety.set_torque(true) {
+                (Bringup::Limp, Some(sensors)) => match safety
+                    .apply(sensors.positions, sensors.positions, policy_cfg.gain)
+                    .and_then(|_| safety.set_torque(true))
+                {
                     Ok(()) => {
                         if seated_boot && controller.as_ref().is_some_and(|c| c.has_sitstand()) {
                             seated_boot = false;
@@ -2130,7 +2139,10 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
             controller.is_some(),
             sensors.as_ref(),
         ) {
-            match safety.set_torque(true) {
+            match safety
+                .apply(sensors.positions, sensors.positions, policy_cfg.gain)
+                .and_then(|_| safety.set_torque(true))
+            {
                 Ok(()) => {
                     if seated_boot && controller.as_ref().is_some_and(|c| c.has_sitstand()) {
                         // Seated boot: hold the seat and rise via the sitstand network —

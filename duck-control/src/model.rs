@@ -47,23 +47,30 @@ pub const MOUTH_INDEX: usize = 9;
 
 /// Home pose from the Raspberry Pi model metadata. The policy observes joint positions
 /// relative to these values and adds its output to the same pose.
+// pub const DEFAULT_POSITION: [f64; NUM_JOINTS] = [
+//     0.0,     // left_hip_yaw
+//     -0.087,  // left_hip_roll
+//     -0.458,  // left_hip_pitch
+//     -0.005,  // left_knee
+//     0.4530,  // left_ankle
+//     0.349,   // neck_pitch
+//     0.349,   // head_pitch
+//     0.0,     // head_yaw
+//     0.0,     // head_roll
+//     0.0,     // mouth
+//     0.0,     // right_hip_yaw
+//     0.087,   // right_hip_roll
+//     0.458,   // right_hip_pitch
+//     0.005,   // right_knee
+//     -0.4530, // right_ankle
+// ];
+
 pub const DEFAULT_POSITION: [f64; NUM_JOINTS] = [
-    0.0,     // left_hip_yaw
-    -0.087,  // left_hip_roll
-    -0.458,  // left_hip_pitch
-    -0.005,  // left_knee
-    0.4530,  // left_ankle
-    0.349,   // neck_pitch
-    0.349,   // head_pitch
-    0.0,     // head_yaw
-    0.0,     // head_roll
-    0.0,     // mouth
-    0.0,     // right_hip_yaw
-    0.087,   // right_hip_roll
-    0.458,   // right_hip_pitch
-    0.005,   // right_knee
-    -0.4530, // right_ankle
+    0.0, 0.0700, -0.4579, -0.0049, 0.4530,
+    0.2491, 0.0491, 0.0, 0.0, 0.0,
+    0.0, 0.0073, 0.4579, 0.0049, -0.4530,
 ];
+
 
 /// Mouth travel, radians: closed and fully open. The mechanism reuses the v1.6 range,
 /// −5°..+30°, from `microduck_runtime`'s `variant.rs`.

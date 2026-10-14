@@ -22,7 +22,7 @@
 # you can delete.
 set -eu
 
-SYSROOT="${DUCK_SYSROOT:-${TMPDIR:-/tmp}/duck-aarch64-sysroot}"
+SYSROOT="${DUCK_SYSROOT:-$(cd "$(dirname "$0")/.." && pwd)/deploy/sysroot}"
 CACHE="${SYSROOT}/.cache"
 
 # Debian 13. The robot runs Armbian on a trixie userland and takes GStreamer from the Debian
@@ -84,7 +84,7 @@ libsysprof-capture-4-dev libpcre2-dev libffi-dev liborc-0.4-dev
 zlib1g-dev libmount-dev libblkid-dev libselinux1-dev libsepol-dev
 libudev-dev libudev1"
 
-say()  { printf '\033[1m==>\033[0m %s\n' "$*"; }
+say()  { printf '\033[1m==>\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
@@ -118,12 +118,12 @@ verify() {
     bad=0
     for mod in $MODULES; do
         if version="$(pkg-config --modversion "$mod" 2>/dev/null)"; then
-            printf '  %-24s %s\n' "$mod" "$version"
+            printf '  %-24s %s\n' "$mod" "$version" >&2
         else
             # The first line names the module pkg-config could not find, which is usually a
             # transitive one rather than $mod itself — that is the package to add above.
             printf '  %-24s MISSING: %s\n' "$mod" \
-                "$(pkg-config --print-errors --exists "$mod" 2>&1 | head -1)"
+                "$(pkg-config --print-errors --exists "$mod" 2>&1 | head -1)" >&2
             bad=1
         fi
     done
@@ -134,7 +134,10 @@ download() {
     url="$1"
     dest="$2"
     tmp="${dest}.tmp.$$"
-    if curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL -o "$tmp" "$url"; then
+    say "downloading ${url}"
+    if curl --retry 5 --retry-all-errors --retry-delay 2 --retry-max-time 300 \
+        --connect-timeout 15 --max-time 300 --speed-limit 1024 --speed-time 60 \
+        -fL --progress-bar -o "$tmp" "$url"; then
         mv "$tmp" "$dest"
     else
         rm -f "$tmp"
@@ -143,6 +146,11 @@ download() {
 }
 
 fetch() {
+    legacy_cache="${TMPDIR:-/tmp}/duck-aarch64-sysroot/.cache"
+    if [ -z "${DUCK_SYSROOT:-}" ] && [ ! -d "$CACHE" ] && [ -d "$legacy_cache" ]; then
+        say "reusing downloaded packages from ${legacy_cache}"
+        cp -R "$legacy_cache" "$CACHE"
+    fi
     install -d "$CACHE"
     index="${CACHE}/Packages"
     if [ ! -s "$index" ]; then
@@ -174,7 +182,7 @@ fetch() {
         [ -n "$data" ] || { rm -rf "$tmp"; die "no data.tar in ${deb}"; }
         tar -xf "$data" -C "$SYSROOT" || { rm -rf "$tmp"; die "cannot extract ${data}"; }
         rm -rf "$tmp"
-        printf '  %s\n' "$pkg"
+        printf '  %s\n' "$pkg" >&2
     done
 }
 
