@@ -588,12 +588,10 @@ impl RobotIo for FeetechIo {
     }
 
     fn set_gain(&mut self, kp: u16) -> Result<()> {
-        // `kp` is the raw register value for reg 50 (0..254). Kd/Ki are the BAM-identified
-        // firmware values (40/0): position-mode Ki is inert, and the HD1910 factory D is 40
-        // not 32. See `crate::hardware::HD1910_FIRMWARE`.
+        // Raw Kp (0..254); Kd/Ki = 0/0 matches the M6 pure-P training recipe.
         const KD: u8 = HD1910_FIRMWARE.kd;
         const KI: u8 = HD1910_FIRMWARE.ki;
-        // Register 50 is 0..=254. BAM identified Kp=32; clamp so a leftover 1023 from an
+        // Register 50 is 0..=254. Clamp so a leftover 1023 from an
         // XL330 config cannot wrap.
         let kp_byte = kp.min(254) as u8;
         for &id in &JOINT_IDS {

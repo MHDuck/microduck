@@ -399,6 +399,7 @@ cargo run -p xtask -- package \
     --include "scripts/setup-rkaiq.sh=scripts/setup-rkaiq.sh" \
     --include "scripts/rkaiq-modinfo-shim.c=scripts/rkaiq-modinfo-shim.c" \
     --include "scripts/setup-login.sh=scripts/setup-login.sh" \
+    --include "scripts/keyboard-control.py=scripts/keyboard-control.py" \
     --include "scripts/robot-rescue=scripts/robot-rescue" \
     --include "scripts/robot-boot-check=scripts/robot-boot-check" \
     --include "updater/systemd/robot-boot-check.service=systemd/robot-boot-check.service" \
@@ -417,6 +418,7 @@ cargo run -p xtask -- package \
     --include "docs/design/updater-design.md=docs/updater-design.md" \
     --include "deploy/README.md=docs/deploy.md" \
     --include "policies/walk.onnx=policies/walk.onnx" \
+    --include "policies/kp30.onnx=policies/kp30.onnx" \
     --include "policies/alpha_walking.onnx=policies/alpha_walking.onnx" \
     --include "policies/alpha_stand.onnx=policies/alpha_stand.onnx" \
     --include "policies/alpha_sitstand.onnx=policies/alpha_sitstand.onnx" \

@@ -8,9 +8,8 @@
 # per-robot configuration rather than a shipped default, so it must survive an update
 # *and* a rollback (docs/design/architecture.md §3). The installer never overwrites it.
 #
-# Every value below is the built-in default. The file may be deleted entirely — an
-# unprovisioned board comes up on these same numbers rather than refusing to start, which
-# is far easier to diagnose remotely than a daemon that will not run.
+# Kp=30 HD1910 velocity profile: 2026-10-14_21-23-05_velocity.
+# Install as /etc/robot/robotd.toml to select the matching policy and tuning.
 
 [platform]
 # Which robot this board is. One line selects the servo protocol, where the IMU is read,
@@ -25,21 +24,19 @@ variant = "open_microduck"
 # Serial port the servos share. /dev/ttyS2 is the Radxa Zero 3W's wiring; a board wired
 # differently can also be overridden per-invocation with `robotd --port`, which is the dev
 # escape hatch rather than the thing to edit here.
-port = "/dev/ttyACM0"
+port = "/dev/ttyS4"
 # Which driver the serial port speaks. Keep this in step with [platform].variant
 # (hd1910 for open_microduck, xl330 for microduck). robotd opens the variant's driver.
 driver = "hd1910"
 
 [imu]
-# OpenMicroDuck only: the IMU on its own I²C bus. Production wiring is i2c4 (pins 27/28,
-# on-board pull-ups), aliased /dev/i2c-imu by the udev rule, at 0x6A.
-# If that path cannot be opened or WHO_AM_I is not 0x70, robotd scans /dev/i2c-* the same
-# way imu_probe does — some boards answer on /dev/i2c-5. Do not point this at i2c6: 0x6A
-# there is a different device.
+# BNO085 mounting: sensor +X up, +Y left, +Z backward.
+# Trunk axes: +X forward, +Y left, +Z up; trunk = [-sensor_z, sensor_y, sensor_x].
 # MicroDuck (variant = "microduck") ignores this section: the IMU is imu_to_dxl at
 # Dynamixel ID 200, fetched in the same sync_read as the XL330s.
-bus = "/dev/i2c-5"
-address = 0x6A
+driver = "bno085"
+bus = "/dev/i2c-3"
+address = 0x4B
 
 # Every value below that is commented out shows the built-in default. LEAVE IT COMMENTED
 # unless this robot genuinely needs a different value: install.sh copies this file to
@@ -112,12 +109,18 @@ enabled = true
 # Drive mode: "walk" (legs, the default) or "roller". The mode changes which policies load
 # AND the tuning defaults below — every value left unset resolves per mode, so switching a
 # robot to the roller is this one line plus `systemctl restart robotd`. The roller preset
-# is the prototype launcher's, rebased on the alpha defaults as its installer now is:
-# roller.onnx as the locomotion policy, the crouch on the ground-pick trigger (3.0 s, 0.8),
-# action_scale 0.8 — and everything else as walking has it: sit/stand, kicks, roulade, the
-# trained low-pass. Only the standing network stays out: the prototype loads it in roller
+# uses roller.onnx as the locomotion policy and the crouch on the ground-pick trigger
+# (3.0 s, scale 1.0), with the same unfiltered actions as walking. Only the standing
+# network stays out: the prototype loads it in roller
 # mode and then never runs it, standing transitions being skipped on wheels.
 mode = "walk"
+walk = "/opt/robot/daemon/current/policies/kp30.onnx"
+stand = "none"
+sitstand = "none"
+ground_pick = "none"
+kick_left = "none"
+kick_right = "none"
+roulade = "none"
 
 # Policy files. Unset means the mode's default inside the release directory, so an ordinary
 # update carries the policies alongside the binaries that were trained against them. Point
@@ -142,28 +145,24 @@ mode = "walk"
 # a startup failure rather than a build one — robotd reports it through robot.health and
 # holds its pose. scripts/install.sh installs it; ORT_DYLIB_PATH overrides where to look.
 
-# Scales raw policy output into a joint offset. Unset resolves per mode: 0.9 walking (the
-# prototype's current alpha default), 0.8 roller.
-# action_scale = 0.9
+# Training uses home + action without clipping or action low-pass.
+action_scale = 1.0
 
 # The standing policy is trained to be applied whole.
-# standing_action_scale = 1.0
-# Standing runs softer, at this fraction of `gain`. The prototype's --standing-kp-ratio.
-# standing_gain_ratio = 0.8
-# Position P gain while running. Unset follows [platform].variant: 32 OpenMicroDuck
-# (HD1910 BAM Kp), 200 MicroDuck (XL330).
-# gain = 32
+standing_action_scale = 1.0
+# Keep the running gain during standing.
+standing_gain_ratio = 1.0
+# HD1910 M6 firmware P gain from the saved training configuration.
+gain = 30
 
 # First-order low-pass on the head and leg joint targets, as a blend factor in (0, 1].
-# 1.0 is pass-through (off). Unset resolves per mode: 0.5 / 0.7 walking — the values the
-# alpha policies are TRAINED with (mjlab ACTION_LOW_PASS_{HEAD,LEG}_ALPHA); they must match
-# training or transfer degrades. Both modes: the rebased roller preset keeps them too.
-# head_lowpass = 0.5
-# legs_lowpass = 0.7
+# 1.0 is pass-through (off), matching this training run.
+head_lowpass = 1.0
+legs_lowpass = 1.0
 
 # The ground pick: one cycle length in seconds (the move hands back at 70% of the cycle,
 # as the prototype does), its action scale, and a gain multiplier while it runs. Unset
-# period/scale resolve per mode: 4.0 / 1.0 walking, 3.0 / 0.8 for the roller crouch.
+# period/scale resolve per mode: 4.0 / 1.0 walking, 3.0 / 1.0 for the roller crouch.
 # ground_pick_period = 4.0
 # ground_pick_action_scale = 1.0
 # ground_pick_gain_ratio = 1.0
@@ -207,8 +206,8 @@ mode = "walk"
 # deadman_ms = 500
 
 # The gain limp-fall yields at — low enough to give way rather than fight the floor.
-# Unset follows [platform].variant: 8 OpenMicroDuck, 50 MicroDuck.
-# gain_limp = 8
+# Unset follows [platform].variant: 1 OpenMicroDuck, 50 MicroDuck.
+gain_limp = 1
 
 # Land soft, then stand up from a still robot instead of a thrashing one.
 #
@@ -259,7 +258,7 @@ mode = "walk"
 # held in someone's hands does not stay limp forever.
 #
 # The pose ramp then travels the joints back to standing. Its gain is not the limp gain:
-# they have to actually move across the floor. 160 is the softened standing gain. 0.6 s was
+# they have to actually move across the floor. Use the Kp=30 training gain. 0.6 s was
 # settled on at the robot: a full second is mostly dead time before the stand-up, since the
 # joints travel unloaded rather than lifting the robot, and 0.3 also worked — this keeps
 # some margin over it.
@@ -267,7 +266,7 @@ mode = "walk"
 # limp_fall_still_ms = 200
 # limp_fall_max_ms = 1500
 # limp_fall_pose_ms = 600
-# limp_fall_pose_gain = 160
+limp_fall_pose_gain = 30
 
 # Sit down gracefully and power the machine off when the battery EMA reaches the empty
 # floor (6.6 V — the same value the battery percentage maps to 0%). The EMA moves over

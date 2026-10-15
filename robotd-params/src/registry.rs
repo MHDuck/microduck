@@ -96,7 +96,7 @@ pub const REGISTRY: &[Entry] = &[
         Kind::Text,
         "I²C bus device for the IMU (/dev/i2c-3)",
     ),
-    entry("imu.address", Kind::Integer, "IMU I²C address (0x4A)"),
+    entry("imu.address", Kind::Integer, "IMU I²C address (0x4B)"),
     // ── [control] ────────────────────────────────────────────────────────────
     entry("control.hz", Kind::Integer, "Control loop rate"),
     entry(
@@ -178,17 +178,17 @@ pub const REGISTRY: &[Entry] = &[
     entry(
         "policy.gain",
         Kind::OptionalInteger,
-        "Servo position P gain while running; unset = 32 OpenMicroDuck / 200 MicroDuck",
+        "Servo position P gain while running; unset = 5 OpenMicroDuck / 200 MicroDuck",
     ),
     entry(
         "policy.head_lowpass",
         Kind::OptionalFloat,
-        "Low-pass on head targets; must match training (0.5)",
+        "Low-pass on head targets; unset or 1.0 matches unfiltered training",
     ),
     entry(
         "policy.legs_lowpass",
         Kind::OptionalFloat,
-        "Low-pass on leg targets; walking default 0.7",
+        "Low-pass on leg targets; unset or 1.0 matches unfiltered training",
     ),
     entry(
         "policy.ground_pick_period",
@@ -305,7 +305,7 @@ pub const REGISTRY: &[Entry] = &[
     entry(
         "safety.limp_fall_pose_gain",
         Kind::Integer,
-        "Gain for that ramp — softened standing, not limp",
+        "Gain for that ramp, capped at the running gain",
     ),
     // ── [detect] ─────────────────────────────────────────────────────────────
     feature(

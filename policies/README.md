@@ -1,7 +1,7 @@
 # Policies
 
-The ONNX policies `robotd` runs. All of them are `obs[1,61] -> actions[1,14]`; `robotd`
-checks that at load rather than discovering it mid-stride.
+The ONNX policies `robotd` runs. The active policies use `obs[1,61] -> actions[1,14]`;
+`robotd` checks that at load rather than discovering it mid-stride.
 
 ## This is a temporary home
 
@@ -23,7 +23,22 @@ test is what keeps the three lists honest until then.
 
 ## Provenance
 
-Copied from `apirrone/microduck_runtime` at commit `5f3b314` (`roulade.onnx` at `7e4ab6d`,
+`kp30.onnx` is the supplied Kp=30 model, with ONNX run metadata
+`2026-10-14_21-23-05_velocity`. Its observation layout, joint order, home pose, action
+scale, and embedded normalization match the `walk.onnx` contract below. Its SHA-256 is
+`abf8bec01e402c006c67e1dca2cc2ef606a6bb6173844cc0203d0f7c1341b789`.
+`deploy/robotd.toml.walk` selects this model with running and recovery-pose Kp=30,
+Kd/Ki=0/0, 50 Hz, action scale 1.0, and no action low-pass. It disables the upstream
+skill networks, which were not trained with this actuator recipe.
+
+`walk.onnx` comes from `/home/xh/microduck_rl/logs/rsl_rl/velocity/2026-10-14_19-34-48_velocity/2026-10-14_19-34-48_velocity.onnx`,
+checkpoint 21500. It includes the observation normalizer and uses the HD1910 M6 model,
+Kp/Kd/Ki = 5/0/0, 50 Hz, action scale 1.0, and no action low-pass. Its SHA-256 is
+`c18e05ef4b72650f6bc8a0bf5d2f40910cdd2798e44e58dd3095da15e1169642`.
+To return to this model, set `policy.walk` to its path, `policy.gain=5`, and
+`safety.limp_fall_pose_gain=5` together.
+
+The other policies were copied from `apirrone/microduck_runtime` at commit `5f3b314` (`roulade.onnx` at `7e4ab6d`,
 where it first appeared), dereferencing the symlinks that repository uses to give stable
 names to specific training runs:
 

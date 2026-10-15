@@ -2,10 +2,9 @@
 //! (HD1910 + I²C IMU).
 //!
 //! The BAM *model* (inertia, friction, back-EMF) lives in the identification repo and is
-//! used at training time. This file keeps the snapshot the runtime must not drift from:
-//! the six M1 identification parameters copied from `bam/params/hd1910/m1.json`, and the
-//! firmware register values that model was identified against. `ftbus` writes the firmware
-//! half; the six identification numbers are not sent to the servo.
+//! used at training time. This file keeps a legacy M1 identification snapshot and the
+//! firmware values for the current M6 training recipe. `ftbus` writes the firmware
+//! values; identification parameters are not sent to the servo.
 
 /// The six M1 (Coulomb) identification parameters for the HD-1910-C001.
 ///
@@ -34,9 +33,9 @@ pub const HD1910_BAM_M1: Hd1910BamM1 = Hd1910BamM1 {
     friction_viscous: 0.008,
 };
 
-/// Firmware values the HD1910 BAM model was identified against, and what `FeetechIo` writes.
+/// Firmware values for the 1910 M6 pure-P training recipe, written by `FeetechIo`.
 ///
-/// True-hardware readback (FT-SCS, firmware 3.46): mode 4, Kp/Kd/Ki = 32/40/0, protection
+/// Runtime mode 4, Kp/Kd/Ki = 5/0/0; protection
 /// current 500 LSB = 3.25 A, voltage window 4.0–8.4 V. The robot's pack is 2S **7.4 V**.
 /// Mode 4 is pure position PD and does not rate-limit the target
 /// (`use_rate_limiting = false` in the BAM actuator).
@@ -46,7 +45,7 @@ pub struct Hd1910Firmware {
     pub mode: u8,
     /// Register 50 (and EEPROM 21).
     pub kp: u8,
-    /// Register 51 (and EEPROM 22). Not 32 — the HD1910 factory D is 40.
+    /// Register 51 (and EEPROM 22). Zero matches the training model's pure-P loop.
     pub kd: u8,
     /// Register 52 (and EEPROM 23). Inactive in position mode.
     pub ki: u8,
@@ -60,8 +59,8 @@ pub struct Hd1910Firmware {
 
 pub const HD1910_FIRMWARE: Hd1910Firmware = Hd1910Firmware {
     mode: 4,
-    kp: 32,
-    kd: 40,
+    kp: 5,
+    kd: 0,
     ki: 0,
     protection_current_lsb: 500,
     max_voltage_lsb: 84,
@@ -102,8 +101,8 @@ mod tests {
     #[test]
     fn hd1910_firmware_matches_the_bench_readback() {
         assert_eq!(HD1910_FIRMWARE.mode, 4);
-        assert_eq!(HD1910_FIRMWARE.kp, 32);
-        assert_eq!(HD1910_FIRMWARE.kd, 40);
+        assert_eq!(HD1910_FIRMWARE.kp, 5);
+        assert_eq!(HD1910_FIRMWARE.kd, 0);
         assert_eq!(HD1910_FIRMWARE.ki, 0);
         assert_eq!(HD1910_FIRMWARE.protection_current_lsb, 500);
         assert!((HD1910_FIRMWARE.protection_current_a() - 3.25).abs() < 1e-12);

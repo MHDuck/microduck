@@ -64,21 +64,21 @@ pub struct Tuning {
     pub standing_gain_ratio: f64,
     pub gain: u16,
     /// First-order low-pass on the head joints. `None` is no filtering. The alpha policies
-    /// are trained with 0.5 — it must match training or transfer degrades.
+    /// are trained without action filtering.
     pub head_lowpass: Option<f64>,
-    /// Same, for the ten leg joints. Trained with 0.7.
+    /// Same, for the ten leg joints. Training is unfiltered.
     pub legs_lowpass: Option<f64>,
 }
 
 impl Default for Tuning {
     fn default() -> Self {
         Self {
-            action_scale: 0.9,
+            action_scale: 1.0,
             standing_action_scale: 1.0,
-            standing_gain_ratio: 0.8,
-            gain: 200,
-            head_lowpass: Some(0.5),
-            legs_lowpass: Some(0.7),
+            standing_gain_ratio: 1.0,
+            gain: 5,
+            head_lowpass: None,
+            legs_lowpass: None,
         }
     }
 }
@@ -491,18 +491,18 @@ mod tests {
     #[test]
     fn the_defaults_match_the_prototype() {
         let t = Tuning::default();
-        assert_eq!(t.action_scale, 0.9);
+        assert_eq!(t.action_scale, 1.0);
         assert_eq!(t.standing_action_scale, 1.0);
-        assert_eq!(t.standing_gain_ratio, 0.8);
+        assert_eq!(t.standing_gain_ratio, 1.0);
         assert_eq!(
             t.head_lowpass,
-            Some(0.5),
-            "trained with ACTION_LOW_PASS_HEAD_ALPHA"
+            None,
+            "training has no action low-pass"
         );
         assert_eq!(
             t.legs_lowpass,
-            Some(0.7),
-            "trained with ACTION_LOW_PASS_LEG_ALPHA"
+            None,
+            "training has no action low-pass"
         );
 
         let s = SkillTuning::default();
@@ -524,8 +524,8 @@ mod tests {
     fn standing_softens_the_gain() {
         let t = Tuning::default();
         let standing_gain = (t.gain as f64 * t.standing_gain_ratio).round() as u16;
-        assert_eq!(standing_gain, 160);
-        assert!(standing_gain < t.gain);
+        assert_eq!(standing_gain, 5);
+        assert_eq!(standing_gain, t.gain);
     }
 
     /// The ground pick ends at 70% of its cycle — ending at 100% replays the reach on the

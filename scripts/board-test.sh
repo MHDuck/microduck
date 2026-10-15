@@ -540,7 +540,7 @@ grep -E "^user_overlays=" /boot/armbianEnv.txt | grep -qw microduck-uart4-m1
 echo "    [ok] setup-board fixes overlay_prefix and enables the UART4 overlay"
 
 # Both IMUs share I2C3; the setup script aliases it as /dev/i2c-imu. The live address check
-# needs hardware (`sudo i2cdetect -y 3` should show 0x4A and 0x6A).
+# needs hardware (`sudo i2cdetect -y 3` should show 0x4B and 0x6A).
 grep -E "^user_overlays=" /boot/armbianEnv.txt | grep -qw microduck-i2c3-m0
 grep -q 'KERNEL=="i2c-3", SYMLINK+="i2c-imu"' /etc/udev/rules.d/99-robot-i2c-imu.rules
 # The two udev rules must not clobber each other: one file per stale name.

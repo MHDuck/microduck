@@ -2304,7 +2304,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                     limp_fall
                         .pose_target(tick_start, limp_fall_pose)
                         .unwrap_or(DEFAULT_POSITION),
-                    params.safety.limp_fall_pose_gain,
+                    params.safety.limp_fall_pose_gain.min(params.gain()),
                     true,
                     "limp_pose",
                 ),

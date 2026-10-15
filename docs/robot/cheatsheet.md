@@ -210,6 +210,23 @@ sudo systemctl stop robotd && sudo /opt/robot/daemon/current/bin/robotd init && 
 or `fall_recover` in `robotd.toml` arms the gate: there a fallen robot goes limp and refuses
 `init`/`enable`/skills until it is stood up.
 
+### Keyboard (Linux / SSH terminal)
+
+```
+sudo systemctl stop padd
+sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py
+```
+
+Support the robot before pressing Enter to enable the policy. W/S moves forward/backward,
+A/D strafes left/right, Q/E turns left/right, and Space stops. Movement keys pulse for
+0.3 s; holding a key relies on terminal repeat. Esc or Ctrl-C stops movement and exits,
+leaving the policy enabled to stand. This does not cut motor torque. `padd` is stopped
+to prevent a gamepad from overwriting keyboard commands; restart it when finished:
+
+```
+sudo systemctl start padd
+```
+
 ### Gamepad (`configd`)
 
 ```
@@ -499,10 +516,10 @@ interchangeable on the board, and the daemon picks the driver from an ID read.
 
 **The IMUs are not on the servo bus.** BNO085 and LSM6DSV16X share I²C3, aliased
 `/dev/i2c-imu` by `setup-board.sh`. `robotd` currently reads the single chip selected by
-`[imu].driver`; the defaults select BNO085 at `0x4A`. Check the bus and LSM6 independently:
+`[imu].driver`; the defaults select BNO085 at `0x4B`. Check the bus and LSM6 independently:
 
 ```
-sudo i2cdetect -y 3        # expect 0x4A (BNO085) and 0x6A (LSM6DSV16X)
+sudo i2cdetect -y 3        # expect 0x4B (BNO085) and 0x6A (LSM6DSV16X)
 ls -l /dev/i2c-imu
 imu_probe /dev/i2c-3 0x6A
 ```

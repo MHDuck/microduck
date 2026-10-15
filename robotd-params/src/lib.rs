@@ -527,26 +527,22 @@ pub struct PolicyParams {
     pub kick_right: Option<PathBuf>,
     /// Episodic forward roll. Ships by default in both modes, as the prototype now does.
     pub roulade: Option<PathBuf>,
-    /// Scales raw policy output into a joint offset. Absent resolves per mode: 0.9 walking
-    /// (the prototype's alpha default), 0.8 roller.
+    /// Scales raw policy output into a joint offset. Training uses 1.0 in both modes.
     pub action_scale: Option<f64>,
     pub standing_action_scale: f64,
     /// Standing runs softer, at this fraction of `gain`.
     pub standing_gain_ratio: f64,
-    /// Position P gain while running. Unset resolves per [`Variant`]: 32 OpenMicroDuck
+    /// Position P gain while running. Unset resolves per [`Variant`]: 5 OpenMicroDuck
     /// (HD1910 BAM Kp), 200 MicroDuck (XL330 prototype).
     pub gain: Option<u16>,
-    /// First-order low-pass on the head joint targets, `1.0` = pass-through. Default 0.5
-    /// in both modes — the value the alpha policies are *trained* with, so it must match
-    /// or transfer degrades. (The roller preset used to ship it off; the prototype rebased
-    /// its roller line on the alpha defaults, and this follows.)
+    /// First-order low-pass on head targets; unset or `1.0` matches unfiltered training.
     pub head_lowpass: Option<f64>,
-    /// Same, for the ten leg joints. Walking default 0.7.
+    /// Same, for the ten leg joints; unset is unfiltered.
     pub legs_lowpass: Option<f64>,
     /// One ground-pick cycle, seconds. The move ends at 70% of the cycle, as the prototype
     /// does. Absent resolves per mode: 4.0 walking, 3.0 roller (the crouch).
     pub ground_pick_period: Option<f64>,
-    /// Action scale while the ground pick runs. Absent: 1.0 walking, 0.8 roller.
+    /// Action scale while the ground pick runs. Training uses 1.0 in both modes.
     pub ground_pick_action_scale: Option<f64>,
     /// Gain multiplier while the ground pick runs.
     pub ground_pick_gain_ratio: f64,
@@ -656,23 +652,17 @@ impl PolicyParams {
             kick_left: path(&self.kick_left, kick.then_some("ball_kick_left.onnx")),
             kick_right: path(&self.kick_right, kick.then_some("ball_kick_right.onnx")),
             roulade: path(&self.roulade, Some("roulade.onnx")),
-            action_scale: self.action_scale.unwrap_or(match self.mode {
-                Mode::Walk => 0.9,
-                Mode::Roller => 0.8,
-            }),
+            action_scale: self.action_scale.unwrap_or(1.0),
             standing_action_scale: self.standing_action_scale,
             standing_gain_ratio: self.standing_gain_ratio,
             gain: self.gain.unwrap_or(variant.running_gain()),
-            head_lowpass: Some(self.head_lowpass.unwrap_or(0.5)).filter(|a| *a < 1.0),
-            legs_lowpass: Some(self.legs_lowpass.unwrap_or(0.7)).filter(|a| *a < 1.0),
+            head_lowpass: Some(self.head_lowpass.unwrap_or(1.0)).filter(|a| *a < 1.0),
+            legs_lowpass: Some(self.legs_lowpass.unwrap_or(1.0)).filter(|a| *a < 1.0),
             ground_pick_period: self.ground_pick_period.unwrap_or(match self.mode {
                 Mode::Walk => 4.0,
                 Mode::Roller => 3.0,
             }),
-            ground_pick_action_scale: self.ground_pick_action_scale.unwrap_or(match self.mode {
-                Mode::Walk => 1.0,
-                Mode::Roller => 0.8,
-            }),
+            ground_pick_action_scale: self.ground_pick_action_scale.unwrap_or(1.0),
             ground_pick_gain_ratio: self.ground_pick_gain_ratio,
             kick_duration: self.kick_duration,
             roulade_duration: self.roulade_duration,
@@ -739,7 +729,7 @@ pub struct SafetyParams {
     /// 0.6 keeps some margin over the 0.3 that also worked.
     pub limp_fall_pose_ms: u64,
     /// Gain for that ramp. The joints have to actually travel across the floor, so it is
-    /// not the limp gain; it is the softened standing gain rather than the walking one.
+    /// not the limp gain; it is capped at the running gain by the control loop.
     pub limp_fall_pose_gain: u16,
 }
 
@@ -758,7 +748,7 @@ impl Default for PolicyParams {
             action_scale: None,
             standing_action_scale: 1.0,
             // The prototype's `--standing-kp-ratio`.
-            standing_gain_ratio: 0.8,
+            standing_gain_ratio: 1.0,
             gain: None,
             head_lowpass: None,
             legs_lowpass: None,
@@ -842,11 +832,11 @@ impl Variant {
         matches!(self, Variant::MicroDuck)
     }
 
-    /// Default position P gain written to the servos. HD1910 BAM identified Kp=32;
+    /// Default position P gain written to the servos. HD1910 M6 training uses Kp=5;
     /// XL330 prototype used 200.
     pub fn running_gain(self) -> u16 {
         match self {
-            Variant::OpenMicroDuck => 32,
+            Variant::OpenMicroDuck => 5,
             Variant::MicroDuck => 200,
         }
     }
@@ -854,7 +844,7 @@ impl Variant {
     /// Limp-fall P gain. Same 1/4 ratio as the XL330 50/200 pair.
     pub fn gain_limp(self) -> u16 {
         match self {
-            Variant::OpenMicroDuck => 8,
+            Variant::OpenMicroDuck => 1,
             Variant::MicroDuck => 50,
         }
     }
@@ -1004,7 +994,7 @@ impl Default for Imu {
         Self {
             driver: ImuDriver::default(),
             bus: PathBuf::from("/dev/i2c-3"),
-            address: 0x4A,
+            address: 0x4B,
         }
     }
 }
@@ -1426,19 +1416,19 @@ mod tests {
     fn walk_mode_resolves_to_the_prototype_alpha_config() {
         let p = Params::default().policy.resolved();
         assert_eq!(p.mode, Mode::Walk);
-        assert_eq!(p.action_scale, 0.9);
+        assert_eq!(p.action_scale, 1.0);
         assert_eq!(p.standing_action_scale, 1.0);
-        assert_eq!(p.standing_gain_ratio, 0.8, "--standing-kp-ratio");
-        assert_eq!(p.gain, 32, "HD1910 BAM Kp");
+        assert_eq!(p.standing_gain_ratio, 1.0, "--standing-kp-ratio");
+        assert_eq!(p.gain, 5, "HD1910 BAM Kp");
         assert_eq!(
             p.head_lowpass,
-            Some(0.5),
-            "trained with the filter ON at 0.5"
+            None,
+            "training has no action low-pass"
         );
         assert_eq!(
             p.legs_lowpass,
-            Some(0.7),
-            "trained with the filter ON at 0.7"
+            None,
+            "training has no action low-pass"
         );
         assert_eq!(p.ground_pick_period, 4.0);
         assert_eq!(p.ground_pick_action_scale, 1.0);
@@ -1519,16 +1509,16 @@ mod tests {
                 .unwrap()
                 .ends_with("roller_crouch.onnx")
         );
-        assert_eq!(p.action_scale, 0.8);
+        assert_eq!(p.action_scale, 1.0);
         assert_eq!(p.ground_pick_period, 3.0);
-        assert_eq!(p.ground_pick_action_scale, 0.8);
+        assert_eq!(p.ground_pick_action_scale, 1.0);
         assert_eq!(
             p.head_lowpass,
-            Some(0.5),
-            "the rebased roller line keeps the trained filters"
+            None,
+            "training has no action low-pass"
         );
-        assert_eq!(p.legs_lowpass, Some(0.7));
-        assert_eq!(p.gain, 32, "variant default, not the drive mode");
+        assert_eq!(p.legs_lowpass, None);
+        assert_eq!(p.gain, 5, "variant default, not the drive mode");
     }
 
     #[test]
@@ -1553,8 +1543,8 @@ mod tests {
             assert_eq!(parsed.platform.variant, variant);
         }
         assert_eq!(Params::default().platform.variant, Variant::OpenMicroDuck);
-        assert_eq!(Params::default().gain(), 32);
-        assert_eq!(Params::default().gain_limp(), 8);
+        assert_eq!(Params::default().gain(), 5);
+        assert_eq!(Params::default().gain_limp(), 1);
     }
 
     /// `"none"` disables an optional slot outright — the prototype's `--sitstand-policy None`
@@ -1575,7 +1565,7 @@ mod tests {
         );
         assert_eq!(
             p.legs_lowpass,
-            Some(0.7),
+            None,
             "the other filter keeps its default"
         );
     }

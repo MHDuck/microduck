@@ -24,7 +24,7 @@ pub struct Bno085 {
 
 impl Bno085 {
     pub fn open(cfg: &robotd_params::Imu) -> io::Result<Self> {
-        // Verified body-to-sensor mounting rotation, wxyz.
+        // Body→sensor, wxyz: sensor +X up, +Y left, +Z backward.
         let mount = [std::f64::consts::FRAC_1_SQRT_2, 0.0, std::f64::consts::FRAC_1_SQRT_2, 0.0];
         if !matches!(cfg.address, 0x4a | 0x4b) {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "BNO085 address must be 0x4A or 0x4B"));
