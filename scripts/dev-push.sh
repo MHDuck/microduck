@@ -87,8 +87,6 @@ if [ "$PACKAGE_ONLY" = yes ]; then
     REMOTE_DIR=unused
 fi
 
-sh scripts/fetch-board-deps.sh
-
 # ── which board, and why a name beats an address ───────────────────────────────────────
 #
 # An address moves. A reflash, a router reboot or a different network hands the board a new
@@ -215,6 +213,46 @@ if [ -z "$BOARD" ]; then
     echo "or set DUCK_ROBOT or DUCK_BOARD once per shell" >&2
     exit 2
 fi
+
+if [ "$PACKAGE_ONLY" = no ] && [ "$BOOTSTRAP" = no ]; then
+    echo "==> checking updaterd on $BOARD"
+    ssh -t "$BOARD" '
+        echo "==> checking UTF-8 in /etc/robot/robotd.toml"
+        sudo python3 -c "
+from pathlib import Path
+path = Path(\"/etc/robot/robotd.toml\")
+if path.exists():
+    path.read_text(encoding=\"utf-8\")
+" || exit 1
+        case "$(systemctl is-enabled updaterd.service 2>/dev/null || true)" in
+            masked|masked-runtime)
+                echo "==> unmasking updaterd.service"
+                sudo systemctl unmask updaterd.service || exit 3
+                sudo systemctl unmask --runtime updaterd.service || exit 3
+                if [ ! -f /etc/systemd/system/updaterd.service ]; then
+                    sudo install -m 644 /opt/robot/daemon/current/systemd/updaterd.service \
+                        /etc/systemd/system/updaterd.service || exit 3
+                fi
+                sudo systemctl daemon-reload || exit 3
+                ;;
+        esac
+        if sudo systemctl start updaterd; then
+            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+                if sudo timeout 2 robotctl update status >/dev/null 2>&1; then
+                    exit 0
+                fi
+                sleep 1
+            done
+        fi
+        echo "==> updaterd is not ready; service status and recent logs:" >&2
+        sudo timeout 2 robotctl update status || true
+        sudo systemctl status updaterd --no-pager --full || true
+        sudo journalctl -u updaterd -b -n 30 --no-pager || true
+        exit 3
+    '
+fi
+
+sh scripts/fetch-board-deps.sh
 
 # ── where the artifact lands, and why it is not /var/tmp ───────────────────────────────
 #
@@ -419,6 +457,7 @@ cargo run -p xtask -- package \
     --include "deploy/README.md=docs/deploy.md" \
     --include "policies/walk.onnx=policies/walk.onnx" \
     --include "policies/kp30.onnx=policies/kp30.onnx" \
+    --include "policies/walk_kp5_chilunda.onnx=policies/walk_kp5_chilunda.onnx" \
     --include "policies/alpha_walking.onnx=policies/alpha_walking.onnx" \
     --include "policies/alpha_stand.onnx=policies/alpha_stand.onnx" \
     --include "policies/alpha_sitstand.onnx=policies/alpha_sitstand.onnx" \
@@ -481,7 +520,7 @@ APPLY="sudo robotctl update apply daemon --from '$REMOTE_DIR' --version '$VERSIO
 [ "$DRY_RUN" = no ] || APPLY="$APPLY --dry-run"
 
 if ssh -t "$BOARD" "$APPLY"; then
-    echo "==> $VERSION is live on $BOARD"
+    echo "==> apply request completed on $BOARD"
 else
     status=$?
     echo "==> apply failed (exit $status)" >&2
@@ -499,7 +538,8 @@ fi
 
 # ── did every daemon actually move? ──
 #
-# The apply reporting success means the swap happened and the health gate passed. It does not mean
+# A successful apply RPC can report a rollback, so check current before declaring the release live.
+# It also does not mean
 # the seven daemons are running the release that was swapped in, and the gap between those two is
 # where an afternoon goes: four wifi fixes were once verified as broken against a `configd` that
 # had never restarted. `robotd`, `configd`, `padd`, `mediad` and `tofd` restart during the update;
@@ -528,8 +568,7 @@ want="${current#releases/}"
 echo "    current -> $want"
 
 # That the daemons agree with `current` is not enough on its own: they could all agree on the
-# release this push was supposed to replace. `apply` reported success, so this should be
-# impossible — which is the reason to check it rather than the reason not to.
+# release this push was supposed to replace if the apply rolled back.
 [ "$want" = "$pushed" ] || {
     echo "    [FAIL] current is $want, but this push built $pushed"
     exit 1
@@ -596,6 +635,11 @@ REMOTE
 then
     echo "==> every daemon on $BOARD is running $VERSION"
 else
-    echo "==> the release is live but not everything is running it" >&2
+    echo "==> deployment verification failed; service status and recent logs:" >&2
+    ssh -t "$BOARD" '
+        sudo robotctl update show --no-journal || true
+        sudo systemctl status robotd --no-pager --full || true
+        sudo journalctl -b -u robotd -u updaterd -n 100 --no-pager || true
+    ' || true
     exit 1
 fi

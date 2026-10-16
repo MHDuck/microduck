@@ -214,17 +214,21 @@ or `fall_recover` in `robotd.toml` arms the gate: there a fallen robot goes limp
 
 ```
 sudo systemctl stop padd
+sudo systemctl start robotd
 sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py
 ```
 
 Support the robot before pressing Enter to enable the policy. W/S moves forward/backward,
 A/D strafes left/right, Q/E turns left/right, and Space stops. Movement keys pulse for
-0.3 s; holding a key relies on terminal repeat. Esc or Ctrl-C stops movement and exits,
-leaving the policy enabled to stand. This does not cut motor torque. `padd` is stopped
-to prevent a gamepad from overwriting keyboard commands; restart it when finished:
+0.3 s; holding a key relies on terminal repeat. The status line displays commanded
+`vx` / `vy` (m/s) and `vyaw` (rad/s), not measured speed. Support the robot before
+Esc or Ctrl-C: exit stops the `robotd` service and cuts motor torque. Start `robotd`
+again before the next session. With a custom `--socket`, exit instead requests
+`robot.relax` without stopping a system service. `padd` is stopped to prevent a
+gamepad from overwriting keyboard commands; to return to the gamepad:
 
 ```
-sudo systemctl start padd
+sudo systemctl start robotd padd
 ```
 
 ### Gamepad (`configd`)
