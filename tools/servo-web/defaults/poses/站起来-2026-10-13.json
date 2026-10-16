@@ -1,0 +1,96 @@
+{
+ "name": "站起来",
+ "time": "2026-10-13 10:51",
+ "rows": [
+  {
+   "id": 20,
+   "joint": "left_hip_yaw",
+   "pos": 2332,
+   "deg": 25.0
+  },
+  {
+   "id": 21,
+   "joint": "left_hip_roll",
+   "pos": -110,
+   "deg": -189.7
+  },
+  {
+   "id": 22,
+   "joint": "left_hip_pitch",
+   "pos": 2122,
+   "deg": 6.5
+  },
+  {
+   "id": 23,
+   "joint": "left_knee",
+   "pos": 3978,
+   "deg": 169.6
+  },
+  {
+   "id": 24,
+   "joint": "left_ankle",
+   "pos": 3829,
+   "deg": 156.5
+  },
+  {
+   "id": 30,
+   "joint": "neck_pitch",
+   "pos": -471,
+   "deg": -221.4
+  },
+  {
+   "id": 31,
+   "joint": "head_pitch",
+   "pos": 2141,
+   "deg": 8.2
+  },
+  {
+   "id": 32,
+   "joint": "head_yaw",
+   "pos": -185,
+   "deg": -196.3
+  },
+  {
+   "id": 33,
+   "joint": "head_roll",
+   "pos": 3212,
+   "deg": 102.3
+  },
+  {
+   "id": 34,
+   "joint": "mouth",
+   "pos": 2814,
+   "deg": 67.3
+  },
+  {
+   "id": 10,
+   "joint": "right_hip_yaw",
+   "pos": 329,
+   "deg": -151.1
+  },
+  {
+   "id": 11,
+   "joint": "right_hip_roll",
+   "pos": 3996,
+   "deg": 171.2
+  },
+  {
+   "id": 12,
+   "joint": "right_hip_pitch",
+   "pos": 3377,
+   "deg": 116.8
+  },
+  {
+   "id": 13,
+   "joint": "right_knee",
+   "pos": 4368,
+   "deg": 203.9
+  },
+  {
+   "id": 14,
+   "joint": "right_ankle",
+   "pos": 4006,
+   "deg": 172.1
+  }
+ ]
+}

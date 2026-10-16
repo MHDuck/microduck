@@ -1,0 +1,3 @@
+-r requirements.txt
+smbus2>=0.4.3,<1
+VL53L5CX==1.0.1

@@ -21,3 +21,6 @@ secret*
 
 # Playground and scratch state (see updater/examples/playground.rs).
 /verify
+
+# Board debug deployment archives; runtime data is ignored inside the tool.
+/tools/servo-web/dist/
