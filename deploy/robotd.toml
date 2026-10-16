@@ -117,8 +117,16 @@ enabled = true
 # (3.0 s, scale 1.0), with the same unfiltered actions as walking. Only the standing
 # network stays out: the prototype loads it in roller
 # mode and then never runs it, standing transitions being skipped on wheels.
-mode = "walk"
 
+gain = 5
+mode = "walk"
+walk = "/opt/robot/daemon/current/policies/walk_kp5_chilunda.onnx"
+stand = "none"
+sitstand = "none"
+ground_pick = "none"
+kick_left = "none"
+kick_right = "none"
+roulade = "none"
 # Policy files. Unset means the mode's default inside the release directory, so an ordinary
 # update carries the policies alongside the binaries that were trained against them. Point
 # one at your own .onnx to try a build without cutting a release — the loop anyone
@@ -151,7 +159,9 @@ mode = "walk"
 # standing_gain_ratio = 1.0
 # Position P gain while running. Unset follows [platform].variant: 5 OpenMicroDuck
 # (HD1910 M6 training), 200 MicroDuck (XL330).
-# gain = 5
+
+
+
 
 # First-order low-pass on the head and leg joint targets, as a blend factor in (0, 1].
 # 1.0 is pass-through (off). Unset is off, matching unfiltered training.

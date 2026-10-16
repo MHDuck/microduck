@@ -218,9 +218,11 @@ sudo systemctl start robotd
 sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py
 ```
 
-Support the robot before pressing Enter to enable the policy. W/S moves forward/backward,
-A/D strafes left/right, Q/E turns left/right, and Space stops. Movement keys pulse for
-0.3 s; holding a key relies on terminal repeat. The status line displays commanded
+Support the robot before pressing Enter to enable the policy. Each W/S key increases/decreases
+`vx` by 0.10 m/s, clamped to -0.40..+0.40 m/s; releasing the key keeps this speed.
+Holding W/S keeps adjusting via terminal repeat; Space zeroes all velocities.
+A/D strafes left/right and Q/E turns left/right for 0.3 s, preserving the set `vx`;
+holding these keys repeats the pulse. The status line displays commanded
 `vx` / `vy` (m/s) and `vyaw` (rad/s), not measured speed. Support the robot before
 Esc or Ctrl-C: exit stops the `robotd` service and cuts motor torque. Start `robotd`
 again before the next session. With a custom `--socket`, exit instead requests
