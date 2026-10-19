@@ -2,6 +2,12 @@
 # nested one (updater/target), and `/target` would not match it.
 target/
 
+# Python environments and caches.
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
 # ── never commit signing material ────────────────────────────────────────────
 #
 # `cargo xtask keygen` refuses to write keys inside the repo, so these patterns are
@@ -18,11 +24,12 @@ secret*
 /dist
 /staged
 /deploy/sysroot/
+/deploy/*.part
 
 # Playground and scratch state (see updater/examples/playground.rs).
 /verify
+/tmp/
+/logs/
 
 # Board debug deployment archives; runtime data is ignored inside the tool.
 /tools/servo-web/dist/
-
-/logs/
