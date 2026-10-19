@@ -69,14 +69,16 @@ def main():
             print("托住机器人，按 Enter 启用模型。")
             print("W/S 每次增减 vx 0.10 m/s（范围 -0.40～+0.40），松开保持；长按会连续调速。")
             print("A/D 左右横移  Q/E 左右转（松开约 0.3 秒停止横移/转向）  空格速度归零  Esc/Ctrl-C 退出")
+            print("T 坐下/站起切换（Enter 启用后使用，切换前速度归零；两次点按请间隔 1 秒以上）。")
             print("实时显示指令速度；vx 持续保持，按空格停止。")
-            print("C 开始/停止实时电流显示和 CSV 记录（可在启用模型之前开始）。")
+            print("C 开始/停止实际策略、电流显示和 CSV 记录（可在启用模型之前开始）。")
             print("退出会卸力，请先托住机器人；默认连接还会停止 robotd 服务。")
             terminal = sys.stdin.fileno()
             saved = termios.tcgetattr(terminal)
             enabled = False
             velocity = (0.0, 0.0, 0.0)
             expires = 0.0
+            last_sit_key = 0.0
             current_socket = None
             current_log = None
             current_status = ""
@@ -110,6 +112,18 @@ def main():
                                 velocity = (0.0, 0.0, 0.0)
                                 expires = 0.0
                                 call("robot.stop", {})
+                            elif key == "t" and enabled:
+                                now = time.monotonic()
+                                if now - last_sit_key > 1.0:
+                                    velocity = (0.0, 0.0, 0.0)
+                                    expires = 0.0
+                                    call("robot.stop", {})
+                                    try:
+                                        call("robot.do", {"skill": "sit_toggle"})
+                                        print("\r\033[K坐站请求已入队；按 C 查看实际策略（sit 坐下 / rise 站起 / walk 行走）。", flush=True)
+                                    except RuntimeError as error:
+                                        print(f"\r\033[K坐站切换失败：{error}", flush=True)
+                                last_sit_key = now
                             elif key == "c":
                                 if current_socket is not None:
                                     current_socket.close()
@@ -130,6 +144,7 @@ def main():
                                         "protection_enabled", "debounce_ticks", "missing_ticks", "policy",
                                         "limited_by", "vx", "vy", "vyaw",
                                         *[f"id_{ident}_phase_a" for ident in JOINT_IDS],
+                                        "input_estimate_abs_a",
                                     ])
                                     current_socket = socket.socket(socket.AF_UNIX)
                                     current_socket.settimeout(1.0)
@@ -190,7 +205,7 @@ def main():
                                 hottest = max(range(len(phases)), key=phases.__getitem__)
                                 protection = "开启" if sample["protection_enabled"] else "关闭"
                                 current_status = (f"I估={total:.2f}/{cutoff:.2f} A 峰={current_peak:.2f} A "
-                                                  f"单颗最大 ID{JOINT_IDS[hottest]}={phases[hottest]:.2f} A "
+                                                  f"单颗相电流最大 ID{JOINT_IDS[hottest]}={phases[hottest]:.2f} A "
                                                   f"保护{protection} {limits}")
                                 values = [tick, 1, total, cutoff, sample["protection_enabled"],
                                           sample["debounce_ticks"]]
@@ -198,9 +213,11 @@ def main():
                                 values = ["", 0, "", "", "", ""]
                                 phases = [""] * len(JOINT_IDS)
                                 current_status = "无有效电流（读取失败或 robotd 未更新）"
+                            current_status = f"策略={state['policy']} | {current_status}"
                             current_writer.writerow([
                                 datetime.now().astimezone().isoformat(timespec="milliseconds"), state["t"],
                                 *values, missing_ticks, state["policy"], limits, *movement["requested"], *phases,
+                                sample.get("input_abs_a", "") if valid else "",
                             ])
                     if time.monotonic() >= expires:
                         velocity = (velocity[0], 0.0, 0.0)

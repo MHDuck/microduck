@@ -214,6 +214,7 @@ struct JointFeedback {
     velocity_rad_s: f64,
     current_ma: f64,
     load_percent: f64,
+    input_current_a: f64,
     volts: f64,
     temp_c: f64,
 }
@@ -245,6 +246,11 @@ fn decode_joint_block(block: &[u8]) -> Result<JointFeedback> {
     let speed = u16::from_le_bytes([block[2], block[3]]);
     let load = u16::from_le_bytes([block[4], block[5]]);
     let current = u16::from_le_bytes([block[13], block[14]]);
+    let current_ma = current_to_ma(current);
+    let load_percent = load_percent(load);
+    let motor_input_a = current_ma / 1000.0 * (load_percent / 100.0).min(1.0);
+    // Opposite current/PWM directions return power to the supply.
+    let regenerating = (current & BIT15 != 0) != (load & (1 << 10) != 0);
 
     let position_rad = position_to_rad(position).ok_or(IoError::Bus(format!(
         "present position {position} out of single-turn range (multi-turn reported)"
@@ -253,8 +259,13 @@ fn decode_joint_block(block: &[u8]) -> Result<JointFeedback> {
     Ok(JointFeedback {
         position_rad,
         velocity_rad_s: speed_to_rad_s(speed),
-        current_ma: current_to_ma(current),
-        load_percent: load_percent(load),
+        current_ma,
+        load_percent,
+        input_current_a: if regenerating {
+            -motor_input_a
+        } else {
+            motor_input_a
+        } + 0.020,
         volts: voltage_to_volts(block[6]),
         temp_c: temperature_to_c(block[7]),
     })
@@ -547,6 +558,7 @@ impl RobotIo for FeetechIo {
 
         let mut sensors = Sensors::default();
         let mut input_current_a = 0.0;
+        let mut input_current_abs_a = 0.0;
         for (joint, block) in blocks.iter().enumerate() {
             if block.len() != TICK_READ_LEN as usize {
                 return Err(IoError::ShortRead {
@@ -559,8 +571,8 @@ impl RobotIo for FeetechIo {
             sensors.positions[joint] = fb.position_rad;
             sensors.velocities[joint] = fb.velocity_rad_s;
             sensors.currents_ma[joint] = fb.current_ma;
-            // Same estimate as the Python Feetech controller, using the same feedback block.
-            input_current_a += fb.current_ma / 1000.0 * (fb.load_percent / 100.0).min(1.0) + 0.021;
+            input_current_a += fb.input_current_a;
+            input_current_abs_a += fb.current_ma / 1000.0 * (fb.load_percent / 100.0).min(1.0) + 0.021;
             self.last_volts[joint] = fb.volts;
             self.last_temps_c[joint] = fb.temp_c;
         }
@@ -568,6 +580,7 @@ impl RobotIo for FeetechIo {
         // The IMU no longer rides this bus; the caller fuses the separate ImuIo sample.
         sensors.imu = ImuData::default();
         sensors.input_current_a = Some(input_current_a);
+        sensors.input_current_abs_a = Some(input_current_abs_a);
         Ok(sensors)
     }
 

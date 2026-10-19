@@ -20,11 +20,12 @@ pub struct Sensors {
     pub positions: [f64; NUM_JOINTS],
     /// Joint velocities, rad/s.
     pub velocities: [f64; NUM_JOINTS],
-    /// Present current magnitude, mA. Sign is dropped — direction is inferable from
-    /// velocity, and every consumer so far wants load, not direction.
+    /// Present current magnitude for joint load reporting, mA.
     pub currents_ma: [f64; NUM_JOINTS],
-    /// Estimated servo supply current, A; None falls back to summed phase currents.
+    /// Estimated net servo supply current, A; negative means regeneration.
     pub input_current_a: Option<f64>,
+    /// Previous magnitude-only estimate, A, retained for comparison in current logs.
+    pub input_current_abs_a: Option<f64>,
     pub imu: ImuData,
 }
 
@@ -35,6 +36,7 @@ impl Default for Sensors {
             velocities: [0.0; NUM_JOINTS],
             currents_ma: [0.0; NUM_JOINTS],
             input_current_a: None,
+            input_current_abs_a: None,
             imu: ImuData::default(),
         }
     }

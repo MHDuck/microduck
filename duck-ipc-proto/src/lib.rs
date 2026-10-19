@@ -2606,6 +2606,9 @@ pub struct CurrentState {
     pub joints_ma: Vec<f64>,
     /// The same supply estimate (or fallback sum) used by overcurrent protection.
     pub input_a: f64,
+    /// Previous magnitude-only estimate, for comparison; not used for protection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_abs_a: Option<f64>,
     pub cutoff_a: f64,
     pub protection_enabled: bool,
     pub debounce_ticks: u32,

@@ -120,9 +120,9 @@ enabled = true
 
 gain = 5
 mode = "walk"
-walk = "/opt/robot/daemon/current/policies/walk_hd1910_rough_v4.onnx"
+walk = "/opt/robot/daemon/current/policies/walk_hd1910_flat_v5.onnx"
 stand = "none"
-sitstand = "none"
+sitstand = "/opt/robot/daemon/current/policies/sitstand_hd1910.onnx"
 ground_pick = "none"
 kick_left = "none"
 kick_right = "none"
@@ -196,8 +196,8 @@ roulade = "none"
 
 [safety]
 # 倾倒/过流触发后关闭全部舵机力矩并锁定；扶正、排障后重启 robotd。
-fall_protection = true
-overcurrent_protection = true
+fall_protection = false
+overcurrent_protection = false
 overcurrent_cutoff_a = 18.0
 overcurrent_debounce_ticks = 2
 

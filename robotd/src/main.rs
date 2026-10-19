@@ -2598,6 +2598,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                     input_a: sample.input_current_a.unwrap_or_else(|| {
                         sample.currents_ma.iter().map(|v| v.abs()).sum::<f64>() / 1000.0
                     }),
+                    input_abs_a: sample.input_current_abs_a,
                     cutoff_a: params.safety.overcurrent_cutoff_a,
                     protection_enabled: params.safety.overcurrent_protection,
                     debounce_ticks: params.safety.overcurrent_debounce_ticks,
