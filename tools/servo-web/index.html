@@ -76,7 +76,7 @@
   <span style="display:flex;gap:14px;font-size:13px"><span>在线 <b id="stOnline">–</b></span><span>刷新 <b id="stHz">–</b></span><span>电压 <b id="stVolt">–</b></span></span>
   <span class="muted" id="busInfo" style="font-size:12px"></span>
   <span id="portBox" style="display:none">
-    <select id="portSel" title="系统里现在能看到的串口；拔插 USB 后口号会变"></select>
+    <select id="portSel" title="板载串口默认 /dev/ttyS4"><option value="/dev/ttyS4">/dev/ttyS4 · 板载 UART4</option></select>
     <button onclick="reconnect()" title="打开选中的串口并重新扫描舵机，不用重启服务">连接</button>
   </span>
   <button class="ok" onclick="torqueAll(1)">全部扭矩开</button>
@@ -109,7 +109,7 @@
       <h2>模拟 <span class="badge" style="color:var(--warn)">没接串口</span></h2>
       <div class="muted" style="font-size:12px;line-height:1.6">
         舵机是虚拟的：按真舵机的速度、加速度走梯形曲线，姿势、滑块、序列、灵动、官方姿势都会在 3D 里动，快慢跟真机一样；扭矩默认开。
-        没有重力：扭矩关了停在原地，站不稳也不会倒（重心投影照样算）。插上 USB 在顶栏选串口点「连接」就切到真舵机。
+        没有重力：扭矩关了停在原地，站不稳也不会倒（重心投影照样算）。在顶栏选择板载串口 /dev/ttyS4，点「连接」就切到真舵机。
       </div>
       <div class="row">IMU <select id="simImu" onchange="send({op:'sim_imu', mode:this.value})">
         <option value="off">不接</option>
@@ -269,7 +269,7 @@
 
 <script>
 // 跟 server.py 的 VERSION 一起改。连上后比对，不一致说明浏览器拿的是旧页面
-const PAGE_VERSION = "0.17.2";
+const PAGE_VERSION = "0.17.3";
 const $ = id => document.getElementById(id);
 const v = id => Number($(id).value);
 let ws, names = {}, present = [], ids = [], lastDump = null, sendTimer = {}, lastSent = {};
@@ -333,7 +333,7 @@ function showSimImu(mode) {
   sel.title = mode ? '' : '服务启动时用参数指定了 IMU，页面里不改';
 }
 function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
-// 串口：没连上时顶栏出现下拉 + 「连接」；连上了只显示口号。拔插 USB 后口号会变，点一下就能重连
+// 板载串口默认 ttyS4；优先显示服务当前连接的串口。
 function showPorts(m) {
   if (m.fake === undefined) return;
   isServoDemo = m.fake === true;
@@ -344,17 +344,20 @@ function showPorts(m) {
   box.style.display = '';
   if (m.ports) {
     const keep = sel.value; sel.innerHTML = '';
-    (m.ports.length ? m.ports : [{ device: '', desc: '没找到串口，插上 USB 再点刷新' }]).forEach(p => {
+    const ports = [...m.ports];
+    if (m.port && !ports.some(p => p.device === m.port)) ports.unshift({ device: m.port, desc: '当前串口' });
+    if (!ports.length) ports.push({ device: '/dev/ttyS4', desc: '默认板载 UART4' });
+    ports.forEach(p => {
       const o = document.createElement('option'); o.value = p.device;
       o.textContent = p.device + (p.desc ? ` · ${p.desc}` : ''); sel.appendChild(o);
     });
     const opts = [...sel.options].map(o => o.value);
-    if (opts.includes(keep)) sel.value = keep; else if (m.port && opts.includes(m.port)) sel.value = m.port;
+    if (m.port && opts.includes(m.port)) sel.value = m.port; else if (opts.includes(keep)) sel.value = keep;
   }
 }
 function reconnect() {
   const port = $('portSel').value;
-  if (!port) { send({ op: 'ports' }); hint('先插上 USB，再点一次'); return; }
+  if (!port) { send({ op: 'ports' }); hint('请选择板载串口 /dev/ttyS4'); return; }
   hint(`正在打开 ${port}…`);
   send({ op: 'reconnect', port });
 }

@@ -1,7 +1,25 @@
-# Radxa 板端部署（v0.17.2）
+# Radxa 板端部署（v0.17.3）
 
 工程源代码在当前仓库 `tools/servo-web`；运行包由此目录的 `package.py` 生成。
 不再使用父目录中旧的 `tools/servo-web` 或原先根目录 `dist` 中的部署包。
+
+## 随新板初始化安装
+
+当前仓库的 `scripts/provision-board.sh` 默认打包并上传本目录，在重启前以 SSH 登录用户
+安装到 `~/microduck/tools/servo-web`，创建 `servo-web.service`。新板首次安装和已有板子的
+环境刷新都会安装；使用普通用户（如 `radxa`）连接，脚本按需调用 sudo。
+
+初始化只安装调试台，不启动它，也不设置开机自启。初始化完成后，托稳机器人再执行：
+
+```bash
+sudo systemctl restart servo-web
+sudo systemctl status servo-web --no-pager -l
+```
+
+随后访问板端 IP 的 8081 端口。启动调试台会停止原控制服务；恢复方法见下文。
+网页串口选择默认 `/dev/ttyS4`，不会再提示插入 USB；串口列表会保留服务实际连接的端口。
+已用旧脚本初始化、提示 `Unit servo-web.service not found` 的板子无需重刷或重跑整套初始化，
+按下面的独立部署步骤补装即可。
 
 ## Windows PowerShell
 
@@ -22,6 +40,10 @@ tar -xzf ~/servo-web-board.tar.gz -C ~/microduck/tools/servo-web
 cd ~/microduck/tools/servo-web
 bash deploy-board.sh /dev/ttyS4
 ```
+
+如果只安装服务、稍后再开始调试，使用 `bash deploy-board.sh /dev/ttyS4 --install-only`。
+该模式允许串口设备暂未出现，适用于新板配置 overlay 后、重启前的初始化阶段；
+真正启动服务时仍由 `ExecStartPre` 检查串口存在且未被占用。
 
 安装脚本会安装 Python、ALSA、SoX、GStreamer 等依赖，配置串口、I²C、音视频
 设备权限，依次停止 `padd` / `mediad` / `robotd` / `tofd` 后启动 `servo-web.service`。

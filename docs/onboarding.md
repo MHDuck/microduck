@@ -164,6 +164,11 @@ export DUCK_TOKEN=github_pat_replace_with_your_token   # 仓库暂时私有，re
 等重启 → 流式看日志 → 最后 `robotctl health`。是**旁观者**：板子自己装完（systemd resume unit），
 Ctrl-C 不损失任何东西，日志在 `/var/lib/robot/provision.log`。
 
+初始化还会在重启前安装 `~/microduck/tools/servo-web` 并注册 `servo-web.service`，默认不启动。
+需要网页调试时先托稳机器人，再执行 `sudo systemctl restart servo-web`，访问板端 IP 的 8081 端口。
+调试台启动时会停止 `padd`、`mediad`、`robotd`、`tofd`；独立补装和恢复控制见
+[`servo-web 部署说明`](../tools/servo-web/DEPLOY.md)。
+
 **为什么默认带 `--pause-btd-on-pair`**：aic8800 蓝牙模块在 `btd` 广播时手柄无法建立**新**绑定，
 暂停一下只为配对窗口。（另有个 `--weird-ble`，只在"暂停也没用"时用，别乱开——见
 [`install-dev.md`](robot/install-dev.md#the-three-configurations-and-how-to-tell-which-you-have)。）

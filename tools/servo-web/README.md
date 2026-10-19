@@ -1,9 +1,10 @@
 # servo-web · 飞特舵机网页调试台
 
-**当前板端版 v0.17.2：[部署命令与硬件配置](DEPLOY.md)。** 调试台默认端口为 8081；调试期间停止 `padd`、`mediad`、`robotd`、`tofd`，避免它们重新接管硬件。工程位于飞特 FORK 仓库的
+**当前板端版 v0.17.3：[部署命令与硬件配置](DEPLOY.md)。** 调试台默认端口为 8081；调试期间停止 `padd`、`mediad`、`robotd`、`tofd`，避免它们重新接管硬件。工程位于飞特 FORK 仓库的
 `tools/servo-web`，增加 BNO085 I²C 姿态与 3D 跟随、LSM6DSV16X 角速度、VL53L5CX
 8×8 测距、Hello 播放、5 秒录音和 IMX219 检查 / 拍照。保留 v0.16.0 单颗零点及 ID 对调。
 以下为原调试台功能说明；板端安装以 `DEPLOY.md` 为准。
+`scripts/provision-board.sh` 已默认安装并注册本调试服务；初始化完成后用 `sudo systemctl restart servo-web` 开始调试。
 
 > 页面里的 3D 模型用于调试显示，仍基于上游仿真几何，**不能导出后当最新飞特打印件使用**。结构件与装配模型统一从 [microduck-replica-cad](https://github.com/fanhao375/microduck-replica-cad) 获取。
 
@@ -184,6 +185,7 @@ Node.js 只用于前端数学测试，正常使用调试台不需要。固件主
 
 | 版本 | 日期 | 改了什么 |
 |---|---|---|
+| 0.17.3 | 2026-10-17 | 网页默认板载串口 /dev/ttyS4，补齐当前串口和板载 UART4 的列表显示，移除 USB 连接提示；初始化脚本默认安装调试服务 |
 | 0.17.2 | 2026-10-16 | 调试服务补齐与 padd、mediad 的互斥，先停客户端再停 robotd，修复原服务自动重启导致调试网页被停止；补充原地修复命令 |
 | 0.17.1 | 2026-10-16 | 调试台改用 8081，修复 systemd WorkingDirectory 写法，安装前校验服务配置 |
 | 0.17.0 | 2026-10-16 | 板端 BNO085、LSM6DSV16X、VL53L5CX 读取，音频和相机测试，本地 3D 库与部署包 |

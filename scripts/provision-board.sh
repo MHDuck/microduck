@@ -17,6 +17,8 @@
 # provisioning is one command with continuous output instead of three with a gap.
 # When a daemon release already exists, the same entrypoint refreshes board environment only;
 # it does not replace that release.
+# Also installs servo-web from this checkout into ~/microduck/tools/servo-web, without starting it.
+# After provisioning: sudo systemctl restart servo-web (web port 8081; stops the control daemons).
 #
 #   --name NAME       name the robot, at the end of provisioning: `--name Ducky`. Optional —
 #                     without it the board names itself `duck-<four hex>` from its SoC serial,
@@ -658,12 +660,14 @@ _local="$(dirname "$0")/provision.sh"
 say "sending this clone's provision.sh"
 scp -q "$_local" "$(scp_target /tmp/provision.sh)" || die "could not copy provision.sh"
 _root="$(cd "$(dirname "$0")/.." && pwd)"
+say "packaging servo-web from this checkout"
+python3 "$_root/tools/servo-web/package.py"
 _remote_local="/var/lib/robot/provision-local-$(date +%s)-$$"
 _archive="$(mktemp)"
 if [ -n "$SETUP_ONLY" ]; then
-    tar --exclude=deploy/sysroot -czf "$_archive" -C "$_root" scripts deploy
+    tar --exclude=deploy/sysroot -czf "$_archive" -C "$_root" scripts deploy tools/servo-web/dist/servo-web-board.tar.gz
 else
-    tar --exclude=deploy/sysroot -czf "$_archive" -C "$_root" scripts deploy dist staged/updaterd
+    tar --exclude=deploy/sysroot -czf "$_archive" -C "$_root" scripts deploy dist staged/updaterd tools/servo-web/dist/servo-web-board.tar.gz
 fi
 scp -q "$_archive" "$(scp_target /tmp/microduck-local.tar.gz)" || die "could not copy local payload"
 rm -f "$_archive"
@@ -693,6 +697,8 @@ fi
 
 # A reboot can disconnect SSH (255); other failures must stop provisioning here.
 _stage="sudo install -d -m 755 '${_remote_local}' && sudo tar -xzf /tmp/microduck-local.tar.gz -C '${_remote_local}' && "
+# Install before the reboot; the UART overlay is not live yet and the debug service must stay off.
+_stage="${_stage}mkdir -p \"\$HOME/microduck/tools/servo-web\" && tar -xzf '${_remote_local}/tools/servo-web/dist/servo-web-board.tar.gz' -C \"\$HOME/microduck/tools/servo-web\" && bash \"\$HOME/microduck/tools/servo-web/deploy-board.sh\" /dev/ttyS4 --install-only && "
 _phase_status=0
 ssh -t -o StrictHostKeyChecking=accept-new "$HOST" \
     "${_stage}sudo env ${_env} sh /tmp/provision.sh${_args}" || _phase_status=$?
@@ -874,11 +880,15 @@ done
 echo
 rsh "command -v robotctl >/dev/null 2>&1" \
     || die "robotctl is not installed or the board is unreachable; provisioning completion could not be verified"
+rsh "systemctl cat servo-web.service >/dev/null" \
+    || die "servo-web.service is missing; check the installation output before the reboot"
 if [ -n "$SETUP_ONLY" ]; then
     say "board environment refreshed; installed daemon release is unchanged"
 else
     say "provisioning finished"
 fi
+say "servo-web is installed; to debug, support the robot and run: sudo systemctl restart servo-web"
+say "servo-web listens on port 8081; starting it stops padd, mediad, robotd and tofd"
 
 # The health report is the point of all of it, and it is also the thing most likely to have
 # something to say — a bench board with no servos powered reports unhealthy, correctly.

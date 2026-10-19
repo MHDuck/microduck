@@ -56,6 +56,13 @@ export DUCK_TOKEN=github_pat_replace_with_your_token
 That sends your dev key, starts provisioning, waits out the reboot, streams the log, and ends on
 `robotctl health`.
 
+Provisioning also installs `servo-web.service` from this checkout into
+`~/microduck/tools/servo-web`, using the SSH login account (a non-root user with sudo).
+It stays stopped and is not enabled at boot. To debug, support the robot and run
+`sudo systemctl restart servo-web`, then open port 8081 on the board. This stops
+`padd`, `mediad`, `robotd` and `tofd` while the debugger owns the hardware.
+See [servo-web deployment](../../tools/servo-web/DEPLOY.md) for standalone installation and restoring control.
+
 ### Why `--pause-btd-on-pair` is in that command
 
 On the aic8800 radio a pad cannot form a **new** bond while `btd` is advertising. That flag leaves a

@@ -27,7 +27,10 @@ def main():
     }
     with socket.socket(socket.AF_UNIX) as connection:
         connection.settimeout(1.0)
-        connection.connect(args.socket)
+        try:
+            connection.connect(args.socket)
+        except OSError as error:
+            raise OSError(error.errno, f"连接 robotd socket 失败：{error.strerror}", args.socket) from error
         with connection.makefile("rb") as reader:
             request_id = 0
 
@@ -129,5 +132,7 @@ if __name__ == "__main__":
         pass
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"键盘控制失败：{error}", file=sys.stderr)
+        if isinstance(error, FileNotFoundError) and error.filename == "/run/robotd.sock":
+            print("robotd socket 不存在；请先运行：sudo systemctl start robotd", file=sys.stderr)
         print("如电机仍在动作，请托住机器人并运行：sudo systemctl stop robotd", file=sys.stderr)
         sys.exit(1)

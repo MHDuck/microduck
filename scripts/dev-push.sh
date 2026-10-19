@@ -457,7 +457,6 @@ cargo run -p xtask -- package \
     --include "deploy/README.md=docs/deploy.md" \
     --include "policies/walk.onnx=policies/walk.onnx" \
     --include "policies/kp30.onnx=policies/kp30.onnx" \
-    --include "policies/walk_kp5_chilunda.onnx=policies/walk_kp5_chilunda.onnx" \
     --include "policies/alpha_walking.onnx=policies/alpha_walking.onnx" \
     --include "policies/alpha_stand.onnx=policies/alpha_stand.onnx" \
     --include "policies/alpha_sitstand.onnx=policies/alpha_sitstand.onnx" \

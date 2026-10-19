@@ -2,14 +2,23 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 app_dir=$(pwd -P)
-port=${1:-/dev/ttyS4}
+port=/dev/ttyS4
+install_only=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --install-only) install_only=1 ;;
+        /dev/tty*) port=$1 ;;
+        *) echo '用法：bash deploy-board.sh [/dev/ttyS4] [--install-only]' >&2; exit 2 ;;
+    esac
+    shift
+done
 board_user=$(id -un)
 
 if [ "$(id -u)" -eq 0 ]; then
     echo '请用 radxa 普通用户执行 bash deploy-board.sh，脚本会在需要时调用 sudo。' >&2
     exit 1
 fi
-if [[ ! "$port" =~ ^/dev/tty[A-Za-z0-9_-]+$ ]] || [ ! -c "$port" ]; then
+if [[ ! "$port" =~ ^/dev/tty[A-Za-z0-9_-]+$ ]] || { [ "$install_only" -eq 0 ] && [ ! -c "$port" ]; }; then
     echo "串口不存在或格式错误：$port；可指定 /dev/ttyS4 或 /dev/ttyUSB0。" >&2
     exit 1
 fi
@@ -82,6 +91,11 @@ EOF
 sudo systemd-analyze verify /etc/systemd/system/servo-web.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now avahi-daemon
+if [ "$install_only" -eq 1 ]; then
+    echo 'servo-web.service 已安装，尚未启动；调试时先托稳机器人，再执行 sudo systemctl restart servo-web。'
+    echo '网页端口：8081；启动调试台会停止 padd / mediad / robotd / tofd。'
+    exit 0
+fi
 echo '即将停止 padd / mediad / robotd / tofd 并启动网页调试，请先托稳机器人。'
 # 先停会拉起 robotd 的客户端，避免其自动重启反过来停止调试台。
 for unit in padd.service mediad.service robotd.service tofd.service; do

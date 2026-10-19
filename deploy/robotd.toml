@@ -120,7 +120,7 @@ enabled = true
 
 gain = 5
 mode = "walk"
-walk = "/opt/robot/daemon/current/policies/walk_kp5_chilunda.onnx"
+walk = "/opt/robot/daemon/current/policies/walk_hd1910_rough_v4.onnx"
 stand = "none"
 sitstand = "none"
 ground_pick = "none"

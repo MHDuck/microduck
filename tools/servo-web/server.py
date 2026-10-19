@@ -4,7 +4,7 @@
 用法：
   python server.py --port COM5                      # Windows，URT-2
   python server.py --port /dev/ttyUSB0              # 板子上，URT-2 插 USB
-  python server.py --port /dev/ttyS2                # 板子上，走半双工转接板（先 sudo systemctl stop robotd）
+  python server.py --port /dev/ttyS4                # 板载 UART4，先停止原控制服务
   python server.py --fake                           # 没舵机，看界面
 然后浏览器开 http://<主机>:8081
 """
@@ -35,7 +35,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # 调试台版本。改了前端或后端就加一：index.html 里的 PAGE_VERSION 要跟这里一样，
 # 页面连上后会比对，不一样就提示"页面是旧的，Ctrl+F5"。改动记在 README 的「版本」一节。
-VERSION = "0.17.2"
+VERSION = "0.17.3"
 DEFAULT_IDS = "20-24,30-34,10-14"
 JOINT_NAMES = {
     20: "left_hip_yaw", 21: "left_hip_roll", 22: "left_hip_pitch", 23: "left_knee", 24: "left_ankle",
@@ -286,13 +286,18 @@ def read_phase():
 
 
 def list_ports():
-    """系统里现在有哪些串口。拔插 USB 后口号会变，页面上直接选，不用重启服务。"""
+    """串口列表包含当前连接及通用枚举可能漏掉的板载 UART4。"""
+    ports = []
     try:
         from serial.tools import list_ports as lp
-        return [{"device": p.device, "desc": (p.description or "").strip()} for p in lp.comports()]
+        ports = [{"device": p.device, "desc": (p.description or "").strip()} for p in lp.comports()]
     except Exception as e:
         log(f"列串口失败：{type(e).__name__}: {e}", "总线", "warn")
-        return []
+    for device in (PORT, "/dev/ttyS4"):
+        if device and (device == PORT or Path(device).is_char_device()):
+            if not any(p["device"] == device for p in ports):
+                ports.insert(0, {"device": device, "desc": "板载 UART4" if device == "/dev/ttyS4" else "当前串口"})
+    return ports
 
 
 def bus_trace(line):
@@ -335,7 +340,7 @@ def fallback_fake(why):
     if imu_backend(IMU_SERVICE) == "bus":   # 启动参数 --imu-bus 但没串口：假总线上挂一块虚拟小板答 ID 200
         import imu_bus
         BUS.imu200 = imu_bus.FakeImu200()
-    log(f"{why}，先用假总线把页面起起来；插好 USB 后在页面顶栏选串口点「连接」", "总线", "warn")
+    log(f"{why}，先用假总线把页面起起来；检查串口设备及权限后，在页面顶栏选串口点「连接」（板载串口 /dev/ttyS4）", "总线", "warn")
 
 
 def log_path():
@@ -1692,7 +1697,7 @@ app = Starlette(routes=[
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", help="串口，如 COM5 / /dev/ttyUSB0 / /dev/ttyS2")
+    ap.add_argument("--port", help="板载串口 /dev/ttyS4；也可指定其他串口")
     ap.add_argument("--baud", type=int, default=1_000_000)
     ap.add_argument("--ids", default=DEFAULT_IDS, help="要管的 ID，如 20-24,30-34,10-14")
     ap.add_argument("--fake", action="store_true", help="不接舵机，界面演示")
