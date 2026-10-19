@@ -233,6 +233,26 @@ pub const REGISTRY: &[Entry] = &[
     ),
     // ── [safety] ─────────────────────────────────────────────────────────────
     entry(
+        "safety.fall_protection",
+        Kind::Bool,
+        "Latch torque off after a confirmed fall; restart robotd to recover",
+    ),
+    entry(
+        "safety.overcurrent_protection",
+        Kind::Bool,
+        "Latch torque off after sustained estimated servo supply overcurrent",
+    ),
+    entry(
+        "safety.overcurrent_cutoff_a",
+        Kind::Float,
+        "Total estimated servo supply current cutoff in amps; calibrate for the robot",
+    ),
+    entry(
+        "safety.overcurrent_debounce_ticks",
+        Kind::Integer,
+        "Consecutive fresh overcurrent samples before torque off (2 at 50 Hz = about 40 ms)",
+    ),
+    entry(
         "safety.fall_gravity_z",
         Kind::Float,
         "Projected-gravity z above which the robot counts as fallen",

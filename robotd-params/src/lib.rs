@@ -677,6 +677,12 @@ impl PolicyParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct SafetyParams {
+    /// Latch torque off on a confirmed fall; restart robotd to recover.
+    pub fall_protection: bool,
+    /// Latch torque off on sustained estimated servo supply overcurrent.
+    pub overcurrent_protection: bool,
+    pub overcurrent_cutoff_a: f64,
+    pub overcurrent_debounce_ticks: u32,
     /// Projected-gravity z above which the robot counts as going down. Upright is about
     /// -1.0; on its side is near 0.
     pub fall_gravity_z: f64,
@@ -697,11 +703,10 @@ pub struct SafetyParams {
     /// the fleet lands soft, and a mode every board has to opt into individually is a mode
     /// most boards do not have.
     ///
-    /// The only thing the daemon does about a fall. Drop to `gain_limp`, let the robot
+    /// Used only when `fall_protection` is false. Drop to `gain_limp`, let the robot
     /// collapse, pose it back to standing once it has landed, then hand it to the standing
     /// policy — which stands up far more cleanly from a still robot than from one that has
-    /// been thrashing since the fall began. With it off, a fall changes nothing: the policy
-    /// keeps driving and the humans stay in charge.
+    /// been thrashing since the fall began. Disable both fall switches to keep driving.
     pub limp_fall: bool,
     /// Projected-gravity z the robot must already be past before a fall prediction counts
     /// — about 26° of tilt, which ordinary walking does not reach.
@@ -768,6 +773,10 @@ impl Default for PolicyParams {
 impl Default for SafetyParams {
     fn default() -> Self {
         Self {
+            fall_protection: true,
+            overcurrent_protection: true,
+            overcurrent_cutoff_a: 18.0,
+            overcurrent_debounce_ticks: 2,
             fall_gravity_z: -0.5,
             fall_debounce_ms: 200,
             deadman_ms: 500,
@@ -1040,6 +1049,8 @@ pub enum ParamsError {
     },
     #[error("{path}: control.hz must be between 1 and 1000, got {got}")]
     Rate { path: String, got: u32 },
+    #[error("{path}: invalid safety configuration: {reason}")]
+    Safety { path: String, reason: &'static str },
     #[error(
         "{path}: media.bitrate must be between {min} and {max} bits per second, got {got} — \
          the unit is bits, so 2 Mb/s is 2000000"
@@ -1120,6 +1131,25 @@ impl Params {
     /// Reject values that would produce a loop that cannot work, at startup rather than as
     /// a division by zero three seconds later.
     fn validate(&self, path: &Path) -> Result<(), ParamsError> {
+        let safety_error = if !self.safety.overcurrent_cutoff_a.is_finite()
+            || self.safety.overcurrent_cutoff_a <= 0.0
+        {
+            Some("overcurrent_cutoff_a must be finite and greater than zero")
+        } else if self.safety.overcurrent_debounce_ticks == 0 {
+            Some("overcurrent_debounce_ticks must be at least 1")
+        } else if !self.safety.fall_gravity_z.is_finite()
+            || !(-1.0..1.0).contains(&self.safety.fall_gravity_z)
+        {
+            Some("fall_gravity_z must be finite and in [-1, 1)")
+        } else {
+            None
+        };
+        if let Some(reason) = safety_error {
+            return Err(ParamsError::Safety {
+                path: path.display().to_string(),
+                reason,
+            });
+        }
         if self.control.hz == 0 || self.control.hz > 1000 {
             return Err(ParamsError::Rate {
                 path: path.display().to_string(),

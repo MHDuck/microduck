@@ -1,5 +1,9 @@
 # 05 · 安全网：摔倒预测与 limp-fall（safety.rs + fall.rs）
 
+> 飞特分支更新：`robotd` 现在默认启用倾倒/过流锁定停机；触发后关闭全部舵机力矩。
+> `fall_protection=true` 时旧 `limp_fall` 自动恢复不运行。下文保留原机制讲解，
+> 新保护的原理、阈值修改、关闭与接手入口见 [README](../../README.md#飞特分支倾倒保护与电流保护)。
+
 > 目的：看懂"读到的数字"如何变成"松力/保持/断电"的裁决。安全逻辑在 `duck-control` 里分两层：
 > `Safety`（慢裁决：是不是已经倒了）与 `FallPredictor`（快预测：正在往下倒吗）。
 > 这两层都吃 IMU 的 gravity/gyro——所以 IMU 怎么接、多新鲜，直接决定这层网的效果。

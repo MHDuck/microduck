@@ -428,6 +428,7 @@ struct RobotState {
     mode: AtomicU8,
     /// Published by the loop so the IPC side can answer without consulting it.
     fallen: AtomicBool,
+    protection_latched: AtomicBool,
     /// The policy is driving and has been asked for a non-zero velocity.
     moving: AtomicBool,
     /// Torque is on and the joints are at the home pose, so the policy can drive.
@@ -473,6 +474,7 @@ impl RobotState {
             chorale_accepted: params.chorale.accept,
             mode: AtomicU8::new(mode_code(params.policy.mode)),
             fallen: AtomicBool::new(false),
+            protection_latched: AtomicBool::new(false),
             moving: AtomicBool::new(false),
             homed: AtomicBool::new(false),
             period_us: params.period().as_micros() as u64,
@@ -1444,6 +1446,10 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
         io,
         imu,
         SafetyConfig {
+            fall_protection: params.safety.fall_protection,
+            overcurrent_protection: params.safety.overcurrent_protection,
+            overcurrent_cutoff_a: params.safety.overcurrent_cutoff_a,
+            overcurrent_debounce_ticks: params.safety.overcurrent_debounce_ticks,
             fall_gravity_z: params.safety.fall_gravity_z,
             fall_debounce: Duration::from_millis(params.safety.fall_debounce_ms),
             deadman: Duration::from_millis(params.safety.deadman_ms),
@@ -1703,7 +1709,9 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
         let sensors = coast.sample(fresh);
 
         if let Some(fresh) = fresh.as_ref() {
-            safety.observe(fresh, period);
+            if imu_read_errors == 0 {
+                safety.observe(fresh, period);
+            }
             // Only once the orientation filter has converged: seeding the anchor from a
             // quaternion that is still swinging would put the world origin somewhere the
             // robot never was. A coasted tick is skipped too — repeating a stale sample
@@ -1714,9 +1722,32 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
         }
         state.fallen.store(safety.fallen(), Ordering::Relaxed);
 
-        let snapshot = intents.snapshot();
+        let protection = safety.protection();
+        if protection.is_some() {
+            state.protection_latched.store(true, Ordering::Relaxed);
+            if let Err(e) = safety.enforce_protection() {
+                tracing::error!(error = %e, "protection torque-off failed; retrying next tick");
+            }
+            intents.set_enabled(false);
+            intents.stop();
+            intents.take_power_request();
+            intents.take_skills();
+            intents.take_mode_switch();
+            bringup = Bringup::Limp;
+            limp_fall = LimpFall::Idle;
+            mode_change = None;
+            was_driving = false;
+            hold = coast.known_positions(hold);
+            twist_ema = [0.0; 3];
+        }
+        let mut snapshot = intents.snapshot();
+        if protection.is_some() {
+            snapshot.enabled = false;
+            snapshot.command.twist = [0.0; 3];
+        }
         let (gated, deadman) = safety.gate(snapshot.command, snapshot.twist_age);
         let mut limits: Vec<duck_control::safety::Limit> = deadman.into_iter().collect();
+        limits.extend(protection);
 
         // An explicit `robot.init` / `robot.relax`, taken once.
         //
@@ -1976,7 +2007,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
         // the whole sequence, so the controller is not stepped and the targets below come
         // from this block. Nothing in `safety` needs telling: the fall verdict gates
         // nothing, so the pose ramp moves a robot lying on the floor like any other tick.
-        if params.safety.limp_fall {
+        if params.safety.limp_fall && !params.safety.fall_protection {
             // Abandoned mid-sequence: someone cut the torque, disabled the policy, or the
             // shutdown sit started. Whatever took over owns the robot now — drop out rather
             // than finishing a pose ramp nobody asked for, and hold where the robot is
@@ -2124,8 +2155,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
 
         // Bring the robot up when someone asks it to drive and it has no torque yet.
         //
-        // Not gated on the fall: a fallen robot ramps like any other, as the prototype
-        // does. Being down is a report, and the humans stay in charge.
+        // Safety refuses torque-on while a protection is latched.
         //
         // Needs a sample: `from` is where the joints actually are, and starting a ramp from a
         // position nobody read would be the lurch this exists to avoid.
@@ -2203,7 +2233,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
         }
         state
             .homed
-            .store(bringup == Bringup::Ready, Ordering::Relaxed);
+            .store(protection.is_none() && bringup == Bringup::Ready, Ordering::Relaxed);
 
         // The policy must not start on an unconverged orientation filter — the first
         // seconds of projected gravity are whatever the filter is mid-way through deciding,
@@ -2220,8 +2250,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
         // observation to build, and inventing one would feed the policy a stale robot.
         //
         // And only once the ramp is done, or the policy's first step would come from wherever the
-        // robot was slumped. A fall does not stop the driving, as the prototype does not
-        // stop it: the policy keeps going and the humans stay in charge.
+        // robot was slumped. A latched protection has already disabled the policy above.
         let driving = snapshot.enabled
             && bringup == Bringup::Ready
             && controller.is_some()
@@ -2278,6 +2307,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
         };
 
         let (mut targets, gain, moving, policy_label) = match (driving, sensors.as_ref()) {
+            _ if protection.is_some() => (hold, policy_cfg.gain, false, "protection"),
             // The limp-fall sequence, before anything else — `driving` is false throughout,
             // so without this it would fall through to the hold branch and the robot would
             // be commanded its pre-fall pose at walking gain, which is precisely the thing
@@ -2562,6 +2592,16 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                 },
                 joints: sensors.positions.to_vec(),
                 targets: targets.to_vec(),
+                current: fresh.as_ref().map(|sample| proto::CurrentState {
+                    tick: state.ticks.load(Ordering::Relaxed),
+                    joints_ma: sample.currents_ma.to_vec(),
+                    input_a: sample.input_current_a.unwrap_or_else(|| {
+                        sample.currents_ma.iter().map(|v| v.abs()).sum::<f64>() / 1000.0
+                    }),
+                    cutoff_a: params.safety.overcurrent_cutoff_a,
+                    protection_enabled: params.safety.overcurrent_protection,
+                    debounce_ticks: params.safety.overcurrent_debounce_ticks,
+                }),
                 odom: proto::OdomState {
                     position: odometry.position(),
                     yaw: odometry.yaw(),
@@ -2708,6 +2748,8 @@ fn limit_name(limit: duck_control::safety::Limit) -> &'static str {
         Limit::Deadman => "deadman",
         Limit::Range => "joint_range",
         Limit::NotFinite => "not_finite",
+        Limit::FallProtection => "fall_protection",
+        Limit::Overcurrent => "overcurrent",
     }
 }
 
@@ -3082,10 +3124,9 @@ fn dispatch(
                 proto::Skill::SitToggle => policies.sitstand.is_some(),
                 proto::Skill::Roulade => policies.roulade.is_some(),
             };
-            // Not refused for being down. A skill on a fallen robot is the human's call,
-            // and refusing it is how a robot ends up unable to do the thing that would
-            // have righted it.
-            let result = if !configured {
+            let result = if state.protection_latched.load(Ordering::Relaxed) {
+                proto::IntentResult::refused("safety protection latched; clear the fault and restart robotd")
+            } else if !configured {
                 proto::IntentResult::refused("no policy configured for that skill")
             } else {
                 intents.request_skill(p.skill);
@@ -3171,6 +3212,8 @@ fn dispatch(
             };
             let result = match target {
                 None => proto::IntentResult::refused("mode must be \"walk\" or \"roller\""),
+                Some(_) if state.protection_latched.load(Ordering::Relaxed) =>
+                    proto::IntentResult::refused("safety protection latched; clear the fault and restart robotd"),
                 Some(_) if state.policies.load().walk.is_none() => proto::IntentResult::refused(
                     "no policy on this robot, so there is nothing to switch between",
                 ),
@@ -3277,17 +3320,15 @@ fn dispatch(
         }
 
         // A refusal here is a normal answer with a reason, not an error: the client asked
-        // something reasonable and the daemon declined. Gravity is never one of those
-        // reasons — see below.
+        // something reasonable and the daemon declined.
         proto::Call::RobotEnable(p) => {
             // `toggle` flips the robot's own state — the pad's Start. Evaluated here, not
             // in the client, because a client-side belief drifts (relax, shutdown, either
             // side restarting) and a stale one turns Start into a no-op every other press.
             let on = if p.toggle { !intents.enabled() } else { p.on };
-            // Never refused for being down. Start on a robot lying on the floor is exactly
-            // how someone asks it to stand back up, and it brings the robot up and hands it
-            // to the standing policy like any other enable.
-            let result = {
+            let result = if on && state.protection_latched.load(Ordering::Relaxed) {
+                proto::IntentResult::refused("safety protection latched; clear the fault and restart robotd")
+            } else {
                 intents.set_enabled(on);
                 // No init here: stopping is what returns the robot to its home pose (the
                 // loop commands it directly on the disable — the prototype's "returning
@@ -3314,9 +3355,9 @@ fn dispatch(
         // Both only *ask*. The control loop owns the only `RobotIo` handle, so nothing here touches
         // the bus — which is also why `robotd init` needs the daemon stopped and these do not.
         proto::Call::RobotInit => {
-            // Never refused for gravity: init works whatever the robot is lying on, which
-            // is the prototype's behaviour and what a bench actually needs.
-            let result = {
+            let result = if state.protection_latched.load(Ordering::Relaxed) {
+                proto::IntentResult::refused("safety protection latched; clear the fault and restart robotd")
+            } else {
                 intents.request_init();
                 proto::IntentResult::accepted()
             };

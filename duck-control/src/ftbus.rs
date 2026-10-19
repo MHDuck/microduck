@@ -200,7 +200,7 @@ pub fn temperature_to_c(count: u8) -> f64 {
 }
 
 /// Present-load counts → percent of commanded duty. BIT10 is the direction bit and the low
-/// 10 bits are the magnitude. Monitor-only: nothing downstream consumes load today.
+/// 10 bits are the magnitude. Also used to estimate servo supply current.
 pub fn load_percent(raw: u16) -> f64 {
     (raw & LOAD_MAGNITUDE_MASK) as f64 * 0.1
 }
@@ -480,10 +480,17 @@ impl FeetechIo {
 
     /// Torque on every servo — one transaction per joint, so not something to call per tick.
     pub fn set_torque(&mut self, on: bool) -> Result<()> {
+        let mut error = None;
         for &id in &JOINT_IDS {
-            self.write_register(id, reg::TORQUE_ENABLE, &[if on { 1 } else { 0 }])?;
+            if let Err(e) = self.write_register(id, reg::TORQUE_ENABLE, &[if on { 1 } else { 0 }]) {
+                if on {
+                    return Err(e);
+                }
+                // One missing servo must not prevent the others from being switched off.
+                error.get_or_insert(e);
+            }
         }
-        Ok(())
+        error.map_or(Ok(()), Err)
     }
 
     /// Ramp every joint from where it is now to `target`, linearly. Blocking and deliberately
@@ -539,6 +546,7 @@ impl RobotIo for FeetechIo {
         }
 
         let mut sensors = Sensors::default();
+        let mut input_current_a = 0.0;
         for (joint, block) in blocks.iter().enumerate() {
             if block.len() != TICK_READ_LEN as usize {
                 return Err(IoError::ShortRead {
@@ -551,12 +559,15 @@ impl RobotIo for FeetechIo {
             sensors.positions[joint] = fb.position_rad;
             sensors.velocities[joint] = fb.velocity_rad_s;
             sensors.currents_ma[joint] = fb.current_ma;
+            // Same estimate as the Python Feetech controller, using the same feedback block.
+            input_current_a += fb.current_ma / 1000.0 * (fb.load_percent / 100.0).min(1.0) + 0.021;
             self.last_volts[joint] = fb.volts;
             self.last_temps_c[joint] = fb.temp_c;
         }
 
         // The IMU no longer rides this bus; the caller fuses the separate ImuIo sample.
         sensors.imu = ImuData::default();
+        sensors.input_current_a = Some(input_current_a);
         Ok(sensors)
     }
 

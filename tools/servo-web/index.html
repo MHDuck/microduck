@@ -220,6 +220,56 @@
     </section>
 
     <section>
+      <h2>电机过流保护</h2>
+      <div class="row">
+        <label>电机 <select id="ocId"></select></label>
+        <button onclick="protectionClick(false, false)">读取单颗</button>
+        <button onclick="protectionClick(true, false)">读取全部</button>
+      </div>
+      <div class="row">
+        <label>保护值（原始值） <input id="ocValue" type="number" min="0" max="2047" step="1" placeholder="先读取" oninput="overcurrentPreview()"></label>
+        <span id="ocMa" class="muted">— mA（参考）</span>
+      </div>
+      <div class="row">
+        <label><input id="ocEnable" type="checkbox"> 同时开启过流保护（保留其他保护项）</label>
+        <button class="danger" onclick="protectionClick(false, true)">设置单颗</button>
+        <button class="danger" onclick="protectionClick(true, true)">设置全部</button>
+      </div>
+      <p class="muted" style="font-size:12px">按公开内存表 6.5 mA/格参考换算，例：100 = 650 mA；HD-1910 的实际阈值需按固件确认。未勾选时保留保护开关；保护时间仅显示。写入掉电保存，不自动重启电机。</p>
+      <p class="muted" style="font-size:12px">“全部”包含配置和扫描发现的电机，离线项会逐颗报错。修改电机内的保护值，不修改 robotd 的软件保护配置。</p>
+      <div id="ocStatus" class="muted" aria-live="polite">尚未读取</div>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>ID / 关节</th><th>保护值</th><th>参考 mA</th><th>过流开关</th><th>时间 ms</th><th>结果</th></tr></thead>
+        <tbody id="ocRows"></tbody>
+      </table></div>
+    </section>
+
+    <section>
+      <h2>电机欠压 / 过压保护</h2>
+      <div class="row">
+        <label>电机 <select id="vpId"></select></label>
+        <button onclick="protectionClick(false, false, true)">读取单颗</button>
+        <button onclick="protectionClick(true, false, true)">读取全部</button>
+      </div>
+      <div class="row">
+        <label>欠压阈值 V <input id="vpMin" type="number" min="0" max="25.4" step="0.1" placeholder="先读取"></label>
+        <label>过压阈值 V <input id="vpMax" type="number" min="0" max="25.4" step="0.1" placeholder="先读取"></label>
+      </div>
+      <div class="row">
+        <label><input id="vpEnable" type="checkbox"> 同时开启欠压 / 过压保护（保留其他保护项）</label>
+        <button class="danger" onclick="protectionClick(false, true, true)">设置单颗</button>
+        <button class="danger" onclick="protectionClick(true, true, true)">设置全部</button>
+      </div>
+      <p class="muted" style="font-size:12px">步进 0.1 V，欠压必须小于过压。先读取，再修改需要调整的阈值；设置会保存这两个值。欠压和过压共用电压保护开关，未勾选时保留原开关状态。</p>
+      <p class="muted" style="font-size:12px">“全部”包含配置和扫描发现的电机，逐颗写入 EEPROM 并回读，失败项单独显示。0–25.4 V 是寄存器范围，不代表电机允许的供电范围；实机阈值以固件为准。</p>
+      <div id="vpStatus" class="muted" aria-live="polite">尚未读取</div>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>ID / 关节</th><th>欠压 V</th><th>过压 V</th><th>电压保护</th><th>结果</th></tr></thead>
+        <tbody id="vpRows"></tbody>
+      </table></div>
+    </section>
+
+    <section>
       <h2>单颗操作</h2>
       <div class="row">舵机 <select id="opId"></select>
         <button onclick="send({op:'dump', id:v('opId')})">导出 0–86 寄存器</button>
@@ -269,7 +319,7 @@
 
 <script>
 // 跟 server.py 的 VERSION 一起改。连上后比对，不一致说明浏览器拿的是旧页面
-const PAGE_VERSION = "0.17.3";
+const PAGE_VERSION = "0.19.0";
 const $ = id => document.getElementById(id);
 const v = id => Number($(id).value);
 let ws, names = {}, present = [], ids = [], lastDump = null, sendTimer = {}, lastSent = {};
@@ -283,7 +333,7 @@ function announceImu() { imuFeed.revision++; window.dispatchEvent(new Event('imu
 function connect() {
   ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
   ws.onopen = () => { $('dot').classList.add('on'); $('conn').textContent = '已连接'; };
-  ws.onclose = () => { imuFeed.connected=false; announceImu(); $('dot').classList.remove('on'); $('conn').textContent = '断开，3 秒后重连'; pushLog({ t: new Date().toTimeString().slice(0, 8), cat: '页面', level: 'warn', msg: '跟服务的连接断了，3 秒后重连' }); setTimeout(connect, 3000); };
+  ws.onclose = () => { imuFeed.connected=false; announceImu(); $('dot').classList.remove('on'); $('conn').textContent = '断开，3 秒后重连'; $('ocStatus').textContent = $('vpStatus').textContent = '连接断开，请重连后重新读取保护值'; pushLog({ t: new Date().toTimeString().slice(0, 8), cat: '页面', level: 'warn', msg: '跟服务的连接断了，3 秒后重连' }); setTimeout(connect, 3000); };
   ws.onmessage = e => {
     const m = JSON.parse(e.data);
     if (m.type === 'hello') {
@@ -320,9 +370,14 @@ function connect() {
       hint(m.msg + (m.completed.length ? '；已完成：' + m.completed.map(([a, b]) => `${a} → ${b}`).join('、') : ''));
     }
     else if (m.type === 'dump') showDump(m);
+    else if (m.type === 'overcurrent' || m.type === 'voltage') showProtection(m);
     else if (m.type === 'timing') { $('timing').textContent = `n=${m.n} ids=${m.ids} min ${m.min_ms} ms · avg ${m.avg_ms} ms · p99 ${m.p99_ms} ms · max ${m.max_ms} ms · 失败 ${m.fails}`; }
     else if (m.type === 'logs') m.items.forEach(pushLog);
-    else if (m.type === 'error') hint('出错：' + m.msg + '（详情看日志）');
+    else if (m.type === 'error') {
+      hint('出错：' + m.msg + '（详情看日志）');
+      if (m.msg.startsWith('overcurrent_')) $('ocStatus').textContent = m.msg;
+      if (m.msg.startsWith('voltage_')) $('vpStatus').textContent = m.msg;
+    }
   };
 }
 // 模拟 IMU 下拉：sim_imu 为 null 说明 IMU 是启动参数给的（或接了真串口），页面里不改
@@ -421,12 +476,77 @@ function fillSelect(sel, list, label, prefer) {
 function fillIdSelects() {
   const extra = present.filter(id => !ORDER.includes(id)).sort((a, b) => a - b);
   fillSelect($('opId'), [...ORDER.filter(id => ids.includes(id) || present.includes(id)), ...extra], idLabel);
+  fillSelect($('ocId'), [...ORDER.filter(id => ids.includes(id) || present.includes(id)), ...extra], idLabel);
+  fillSelect($('vpId'), [...ORDER.filter(id => ids.includes(id) || present.includes(id)), ...extra], idLabel);
   // 改号后保留非标准 ID，方便通过 50 等空闲 ID 手动换位。
   fillSelect($('oldId'), [...extra, ...ORDER.filter(id => present.includes(id))], idLabel);
   fillSelect($('swapA'), present, idLabel, 21);
   fillSelect($('swapB'), present, idLabel, 22);
 }
 function validIdInput(id) { return $(id).value.trim() !== '' && Number.isInteger(v(id)) && v(id) >= 0 && v(id) <= 253; }
+function overcurrentPreview() {
+  const raw = $('ocValue').valueAsNumber;
+  $('ocMa').textContent = Number.isInteger(raw) && raw >= 0 && raw <= 2047 ? `${(raw * 6.5).toFixed(1)} mA（参考）` : '请输入 0–2047 的整数';
+}
+function protectionClick(all, writing, voltage = false) {
+  const prefix = voltage ? 'vp' : 'oc', label = voltage ? '欠压 / 过压' : '过流';
+  if (!ws || ws.readyState !== 1) { hint('请等待服务连接后再操作'); return; }
+  if (!all && !validIdInput(prefix + 'Id')) { hint('请选择电机 ID'); return; }
+  const selected = all ? [...new Set([...ids, ...present])] : [v(prefix + 'Id')];
+  if (!selected.length) { hint('没有可操作的电机，请先扫描'); return; }
+  const enable = $(prefix + 'Enable').checked;
+  let values = {}, description = '';
+  if (writing) {
+    if (voltage) {
+      if (['vpMin', 'vpMax'].some(id => $(id).value.trim() === '' || !$(id).validity.valid)) {
+        hint('欠压和过压都必须填写 0.0–25.4 V，步进 0.1 V'); return;
+      }
+      const low = Math.round(v('vpMin') * 10), high = Math.round(v('vpMax') * 10);
+      if (low >= high) { hint('欠压阈值必须小于过压阈值'); return; }
+      values = { min_voltage_raw: low, max_voltage_raw: high };
+      description = `欠压 ${(low / 10).toFixed(1)} V，过压 ${(high / 10).toFixed(1)} V`;
+    } else {
+      const raw = $('ocValue').valueAsNumber;
+      if (!Number.isInteger(raw) || raw < 0 || raw > 2047) { hint('保护值必须是 0–2047 的整数'); return; }
+      values = { current_raw: raw };
+      description = `原始值 ${raw}（按通用表换算 ${(raw * 6.5).toFixed(1)} mA，仅供参考）；保护时间保持不变`;
+    }
+    if (!confirm(`设置 ${selected.length} 颗电机的${label}保护值？\nID：${selected.join(', ')}\n${description}\n${enable ? '同时开启' + label + '保护，保留其他保护项' : '保留各电机原有保护开关'}。\n写入 EEPROM 并逐颗回读；失败项会列出，已完成项不会回滚。\n修改阈值或开启保护可能使电机卸力，请先托稳机器人。`)) return;
+    cancelMotionSenders();
+  }
+  $(prefix + 'Rows').replaceChildren();
+  $(prefix + 'Status').textContent = `正在逐颗${writing ? '设置' : '读取'} ${selected.length} 颗电机…`;
+  send({ op: (voltage ? 'voltage_' : 'overcurrent_') + (writing ? 'set' : 'read'), ids: selected, ...(writing ? { ...values, enable } : {}) });
+}
+function showProtection(m) {
+  const voltage = m.type === 'voltage', prefix = voltage ? 'vp' : 'oc', bit = voltage ? 1 : 8;
+  const rows = $(prefix + 'Rows'); rows.replaceChildren();
+  for (const r of m.rows) {
+    const tr = document.createElement('tr');
+    const values = [`${r.id} · ${CN[r.id] || '非标准 ID'}`,
+      r.ok ? (voltage ? (r.min_voltage_raw / 10).toFixed(1) : r.current_raw) : '—',
+      r.ok ? (voltage ? (r.max_voltage_raw / 10).toFixed(1) : (r.current_raw * 6.5).toFixed(1)) : '—',
+      r.ok ? (r.shutdown & bit ? '已开启' : '未开启') : '—',
+      ...(voltage ? [] : [r.ok ? r.time_raw * 10 : '—']), r.message];
+    values.forEach((value, index) => {
+      const td = document.createElement('td'); td.textContent = String(value);
+      if (!r.ok || (index === 3 && !(r.shutdown & bit))) td.style.color = 'var(--warn)';
+      tr.appendChild(td);
+    });
+    rows.appendChild(tr);
+  }
+  const good = m.rows.filter(r => r.ok), disabled = good.filter(r => !(r.shutdown & bit));
+  $(prefix + 'Status').textContent = `${m.fake ? '模拟电机 · ' : ''}${new Date().toLocaleTimeString()} · ${m.writing ? '设置核对' : '读取'}成功 ${good.length}/${m.rows.length}`
+    + (disabled.length ? `；${disabled.length} 颗${voltage ? '电压' : '过流'}保护未开启` : '') + (m.ok ? '' : '；失败项见表格，请重新读取确认');
+  if (!m.writing && m.rows.length === 1 && good.length === 1) {
+    if (voltage) {
+      $('vpMin').value = (good[0].min_voltage_raw / 10).toFixed(1);
+      $('vpMax').value = (good[0].max_voltage_raw / 10).toFixed(1);
+    } else {
+      $('ocValue').value = String(good[0].current_raw); overcurrentPreview();
+    }
+  }
+}
 function setIdClick() {
   if (!validIdInput('oldId') || !validIdInput('newId')) { hint('请选择在线电机，并填写 0–253 的整数 ID'); return; }
   const o = v('oldId'), n = v('newId');

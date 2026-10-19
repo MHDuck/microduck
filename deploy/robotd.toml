@@ -11,7 +11,7 @@
 # Every value below is the built-in default. The file may be deleted entirely — an
 # unprovisioned board comes up on these same numbers rather than refusing to start, which
 # is far easier to diagnose remotely than a daemon that will not run.
-# The local Kp=30 training policy is selected by deploy/robotd.toml.walk.
+# Policy selection and gains are configured in the [policy] section below.
 
 [platform]
 # Which robot this board is. One line selects the servo protocol, where the IMU is read,
@@ -195,16 +195,19 @@ roulade = "none"
 # nominal_voltage = 7.4
 
 [safety]
+# 倾倒/过流触发后关闭全部舵机力矩并锁定；扶正、排障后重启 robotd。
+fall_protection = true
+overcurrent_protection = true
+overcurrent_cutoff_a = 18.0
+overcurrent_debounce_ticks = 2
+
 # The fall verdict: is the robot down? On projected gravity in the trunk frame — upright
 # reads about -1.0 on z, a robot on its side reads near 0. Debounced, because the impulse
 # from a firm footfall would otherwise read as a fall.
 #
-# It is a REPORT and nothing else. It shows in `robotctl monitor` and the state stream, and
-# it refuses nothing: a fallen robot can still be enabled, init'd, driven and sent skills,
-# because being down is exactly when someone needs to do those things. What the daemon
-# *does* about a fall is limp_fall, further down, and that runs off its own detector.
-# fall_gravity_z = -0.5
-# fall_debounce_ms = 200
+# fall_protection=true turns this verdict into a latched torque-off.
+fall_gravity_z = -0.5
+fall_debounce_ms = 200
 
 # How long the robot goes without a velocity intent before it stops.
 #
@@ -231,11 +234,8 @@ roulade = "none"
 # at. The hand-back is a hand-back and nothing more — with nobody driving, command magnitude
 # selects the standing network, and that is the stand-up.
 #
-# The only thing the daemon does about a fall. With it off, a fall changes nothing: the
-# policy keeps driving and the humans stay in charge, which is the prototype's behaviour
-# and the default here. ON by default since it was validated on a robot: the whole point is
-# that the fleet lands soft, and a mode every board has to opt into individually is a mode
-# most boards do not have. Set it to false on a robot that needs the old behaviour.
+# Only runs when fall_protection=false. To remove all fall reactions, set both
+# fall_protection=false and limp_fall=false.
 # limp_fall = true
 
 # When a fall counts as started. This is the whole feature, and both ways of getting it

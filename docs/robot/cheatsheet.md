@@ -233,6 +233,15 @@ gamepad from overwriting keyboard commands; to return to the gamepad:
 sudo systemctl start robotd padd
 ```
 
+Press **C** to toggle live current display and CSV logging, including before enabling the policy.
+The display refreshes at 5 Hz; the log captures every received control tick (normally about 50 Hz),
+including the supply estimate used by protection, its threshold, all 15 servo phase currents,
+requested velocity, policy, and protection reasons. Logs go to `logs/current-*.csv` under the
+working directory; override with `--log-dir /home/radxa/microduck-logs`. The absolute path and
+sampled peak are printed when logging stops or the controller exits. Invalid samples and missing
+ticks are marked; missing data must not be treated as zero current. This requires the updated
+`robotd` as well as the keyboard script. See the README for threshold calibration.
+
 ### Gamepad (`configd`)
 
 ```

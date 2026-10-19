@@ -24,3 +24,5 @@ secret*
 
 # Board debug deployment archives; runtime data is ignored inside the tool.
 /tools/servo-web/dist/
+
+/logs/

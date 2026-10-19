@@ -4211,6 +4211,7 @@ mod tests {
             },
             joints: vec![0.0; proto::JOINT_NAMES.len()],
             targets: vec![0.0; proto::JOINT_NAMES.len()],
+            current: None,
             odom: proto::OdomState::default(),
             theremin: None,
             chorale: None,

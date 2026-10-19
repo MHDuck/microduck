@@ -2581,6 +2581,9 @@ pub struct RobotState {
     pub joints: Vec<f64>,
     /// What was commanded, so a viewer can show tracking error rather than guessing at it.
     pub targets: Vec<f64>,
+    /// Fresh servo current sample; absent on a failed read or an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<CurrentState>,
     /// Where contact odometry believes the robot is. `default` so a frame from
     /// a `robotd` predating the estimator still parses — zeros, like a robot
     /// that has not moved.
@@ -2594,6 +2597,18 @@ pub struct RobotState {
     /// state of a duck — see [`ChoraleState`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chorale: Option<ChoraleState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CurrentState {
+    pub tick: u64,
+    /// Magnitudes in mA, indexed as JOINT_NAMES.
+    pub joints_ma: Vec<f64>,
+    /// The same supply estimate (or fallback sum) used by overcurrent protection.
+    pub input_a: f64,
+    pub cutoff_a: f64,
+    pub protection_enabled: bool,
+    pub debounce_ticks: u32,
 }
 
 /// What the duck chorale is doing, in [`RobotState`].
@@ -4456,6 +4471,7 @@ mod tests {
             },
             joints: vec![0.0; 15],
             targets: vec![0.0; 15],
+            current: None,
             odom: OdomState::default(),
             theremin: None,
             chorale: None,
@@ -4513,6 +4529,7 @@ mod tests {
             },
             joints: vec![0.0; 15],
             targets: vec![0.0; 15],
+            current: None,
             odom: OdomState::default(),
             theremin: None,
             chorale: None,

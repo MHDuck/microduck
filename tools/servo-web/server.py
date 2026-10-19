@@ -35,7 +35,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # 调试台版本。改了前端或后端就加一：index.html 里的 PAGE_VERSION 要跟这里一样，
 # 页面连上后会比对，不一样就提示"页面是旧的，Ctrl+F5"。改动记在 README 的「版本」一节。
-VERSION = "0.17.3"
+VERSION = "0.19.0"
 DEFAULT_IDS = "20-24,30-34,10-14"
 JOINT_NAMES = {
     20: "left_hip_yaw", 21: "left_hip_roll", 22: "left_hip_pitch", 23: "left_knee", 24: "left_ankle",
@@ -1256,6 +1256,88 @@ def change_ids(cmd):
             "msg": error or ("ID 对调完成" if swap else "ID 修改完成"), "present": online}
 
 
+def read_protection(sid, voltage):
+    values = ({"max_voltage_raw": BUS.read_u8(sid, 14), "min_voltage_raw": BUS.read_u8(sid, 15)}
+              if voltage else {"current_raw": BUS.read_u16(sid, 28), "time_raw": BUS.read_u8(sid, 38)})
+    return {**values, "shutdown": BUS.read_u8(sid, 19)}
+
+
+def protection(cmd):
+    requested = cmd.get("ids")
+    if not isinstance(requested, list) or not 1 <= len(requested) <= 254:
+        raise ValueError("请选择至少一个电机，最多 254 个")
+    selected = list(dict.fromkeys(checked_id(sid) for sid in requested))
+    voltage = cmd["op"].startswith("voltage_")
+    writing = cmd["op"].endswith("_set")
+    label, bit = ("电压", 1) if voltage else ("过流", 8)
+    enable = cmd.get("enable", False)
+    values = ({"min_voltage_raw": cmd.get("min_voltage_raw"), "max_voltage_raw": cmd.get("max_voltage_raw")}
+              if voltage else {"current_raw": cmd.get("current_raw")})
+    if writing:
+        if voltage:
+            if any(type(value) is not int or not 0 <= value <= 254 for value in values.values()):
+                raise ValueError("电压原始值必须是 0–254 的整数（0.0–25.4 V，步进 0.1 V）")
+            if values["min_voltage_raw"] >= values["max_voltage_raw"]:
+                raise ValueError("欠压阈值必须小于过压阈值")
+        elif type(values["current_raw"]) is not int or not 0 <= values["current_raw"] <= 2047:
+            raise ValueError("保护电流原始值必须是 0–2047 的整数")
+        if type(enable) is not bool:
+            raise ValueError("启用保护必须是布尔值")
+    rows = []
+    with CALIB_LOCK:
+        for sid in selected:
+            row = {"id": sid, "ok": False}
+            try:
+                if BUS.read_u8(sid, 5) != sid:
+                    raise ValueError("ID 不在线或回读不一致")
+                before = read_protection(sid, voltage)
+                if not voltage:
+                    row["before_raw"] = before["current_raw"]
+                shutdown = before["shutdown"] | bit if enable else before["shutdown"]
+                if writing:
+                    try:
+                        BUS.unlock(sid)
+                        if BUS.read_u8(sid, 55) != 0:
+                            raise RuntimeError("EEPROM 解锁失败")
+                        if voltage:
+                            writes = [(15, values["min_voltage_raw"]), (14, values["max_voltage_raw"])]
+                            if values["min_voltage_raw"] >= before["max_voltage_raw"]:
+                                writes.reverse()  # 先扩大范围，避免中间出现下限不小于上限
+                            for addr, value in writes:
+                                BUS.write_u8(sid, addr, value)
+                                actual = BUS.read_u8(sid, addr)
+                                if actual != value:
+                                    raise RuntimeError(f"电压地址 {addr} 写入 {value}，回读却为 {actual}")
+                        else:
+                            BUS.write_u16(sid, 28, values["current_raw"])
+                            actual = BUS.read_u16(sid, 28)
+                            if actual != values["current_raw"]:
+                                raise RuntimeError(f"保护值写入 {values['current_raw']}，回读却为 {actual}")
+                        if enable:
+                            BUS.write_u8(sid, 19, shutdown)
+                        if BUS.read_u8(sid, 19) != shutdown:
+                            raise RuntimeError("卸载条件回读不一致")
+                    finally:
+                        BUS.lock(sid)
+                        if BUS.read_u8(sid, 55) != 1:
+                            raise RuntimeError("EEPROM 重新加锁失败，请检查连接后重新读取锁标志 55")
+                after = read_protection(sid, voltage) if writing else before
+                if writing and (any(after[key] != value for key, value in values.items()) or after["shutdown"] != shutdown):
+                    raise RuntimeError("写入后复核不一致，请重新读取")
+                row.update(after)
+                row.update(ok=True, message="写入并回读一致" if writing else "读取成功")
+                detail = (f"欠压 {before['min_voltage_raw'] / 10:.1f} → {after['min_voltage_raw'] / 10:.1f} V，"
+                          f"过压 {before['max_voltage_raw'] / 10:.1f} → {after['max_voltage_raw'] / 10:.1f} V" if voltage else
+                          f"原始值 {before['current_raw']} → {after['current_raw']}，延时 {after['time_raw'] * 10} ms")
+                log(f"#{sid} {label}保护：{detail}，{'开启' if after['shutdown'] & bit else '关闭'}；{row['message']}", "寄存器")
+            except Exception as exc:
+                row["message"] = f"{type(exc).__name__}: {exc}" + ("；可能已部分写入，请重新读取" if writing else "")
+                log(f"#{sid} {label}保护操作失败：{row['message']}", "寄存器", "error", exc=True)
+            rows.append(row)
+    return {"type": "voltage" if voltage else "overcurrent", "writing": writing, "fake": is_fake(), "rows": rows,
+            "ok": all(row["ok"] for row in rows)}
+
+
 def handle(cmd):
     if not COMMAND_LOCK.acquire(blocking=False):
         raise RuntimeError("另一项操作正在执行，请稍后再试")
@@ -1359,6 +1441,8 @@ def _handle(cmd):
         log(f"导出 #{sid}：固件 {r[0]}.{r[1]} 舵机 {r[3]}.{r[4]} END={r[2]} 模式={r[33]} 相位={r[18]} "
             f"P/D/I={r[21]}/{r[22]}/{r[23]} 偏移={fmt_off(r[31] | r[32] << 8)} 扭矩={r[40]} 锁={r[55]} 应答级别={r[8]}", "寄存器")
         return {"type": "dump", "id": sid, **d}
+    elif op in ("overcurrent_read", "overcurrent_set", "voltage_read", "voltage_set"):
+        return protection(cmd)
     elif op == "write_reg":
         sid, addr, size, val = int(cmd["id"]), int(cmd["addr"]), int(cmd.get("size", 1)), int(cmd["value"])
         unlock = bool(cmd.get("unlock"))
@@ -1512,6 +1596,7 @@ async def stream():
 OP_CAT = {"goal": "运动", "goals": "运动", "goals_stream": "运动", "stream_end": "运动", "goals_profile": "运动",
           "release": "运动", "goals_verify": "运动", "torque": "运动", "scan": "总线", "scan_all": "总线", "timing": "总线",
           "dump": "寄存器", "write_reg": "寄存器", "reboot": "寄存器", "set_id": "寄存器", "swap_id": "寄存器", "calibrate": "校准", "zero_one": "校准",
+          "overcurrent_read": "寄存器", "overcurrent_set": "寄存器", "voltage_read": "寄存器", "voltage_set": "寄存器",
           "calib_mid_all": "校准", "calib_undo": "校准", "calib_plan": "校准", "sim_imu": "IMU", "set_dir": "方向", "save_pose": "姿态", "poses": "姿态",
           "delete_pose": "姿态", "log": "系统", "page_log": "页面"}
 QUIET = {"goal", "goals", "goals_stream", "stream_end", "poses", "log", "release", "page_log"}

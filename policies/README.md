@@ -27,9 +27,10 @@ test is what keeps the three lists honest until then.
 `2026-10-14_21-23-05_velocity`. Its observation layout, joint order, home pose, action
 scale, and embedded normalization match the `walk.onnx` contract below. Its SHA-256 is
 `abf8bec01e402c006c67e1dca2cc2ef606a6bb6173844cc0203d0f7c1341b789`.
-`deploy/robotd.toml.walk` selects this model with running and recovery-pose Kp=30,
-Kd/Ki=0/0, 50 Hz, action scale 1.0, and no action low-pass. It disables the upstream
-skill networks, which were not trained with this actuator recipe.
+To use this model, set `policy.walk` to its path in `deploy/robotd.toml`, with
+`policy.gain=30` and `safety.limp_fall_pose_gain=30`, Kd/Ki=0/0, 50 Hz, action scale
+1.0, and no action low-pass. Disable the upstream skill networks, which were not
+trained with this actuator recipe.
 
 `walk.onnx` comes from `/home/xh/microduck_rl/logs/rsl_rl/velocity/2026-10-14_19-34-48_velocity/2026-10-14_19-34-48_velocity.onnx`,
 checkpoint 21500. It includes the observation normalizer and uses the HD1910 M6 model,

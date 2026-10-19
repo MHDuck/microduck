@@ -19,17 +19,9 @@
 //! is the safe state for a biped; losing balance is a different event, and it is not this
 //! layer's to answer.
 //!
-//! **The fall verdict is a report, not a rule.** [`Safety::fallen`] is tracked every tick
-//! and published, and it preempts nothing: a fallen robot keeps being driven and the
-//! humans stay in charge. That is the prototype's behaviour, and it is the only one — a
-//! robot that yields the moment gravity misreads a lean is a robot that keeps sitting down
-//! while someone handles it.
-//!
-//! What to *do* about a fall is a control decision, and it lives above this layer:
-//! `robotd`'s limp-fall mode drops the gain and rides the robot down, on
-//! [`crate::fall::FallPredictor`] rather than on this verdict. It commands through `apply`
-//! like anything else, with no exemption and no back door — which is the point of the
-//! write handle living here.
+//! Enabled fall/overcurrent protections latch a torque-off until this Safety is recreated.
+//! Both `apply` and `set_torque` enforce the latch, including during homing and recovery.
+//! With fall protection disabled, `fallen` remains a report for the optional limp-fall mode.
 
 use std::time::Duration;
 
@@ -49,6 +41,10 @@ pub const ACTUATOR_MAX: f64 = std::f64::consts::PI;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SafetyConfig {
+    pub fall_protection: bool,
+    pub overcurrent_protection: bool,
+    pub overcurrent_cutoff_a: f64,
+    pub overcurrent_debounce_ticks: u32,
     /// Projected-gravity z above which the robot counts as falling. Upright reads about
     /// -1.0 and a robot on its side reads near 0.
     pub fall_gravity_z: f64,
@@ -68,6 +64,11 @@ pub struct SafetyConfig {
 impl Default for SafetyConfig {
     fn default() -> Self {
         Self {
+            // Library callers opt in; robotd enables both through its SafetyParams defaults.
+            fall_protection: false,
+            overcurrent_protection: false,
+            overcurrent_cutoff_a: 18.0,
+            overcurrent_debounce_ticks: 2,
             // The prototype's numbers.
             fall_gravity_z: -0.5,
             fall_debounce: Duration::from_millis(200),
@@ -82,6 +83,8 @@ impl Default for SafetyConfig {
 /// rather than watching the robot ignore it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Limit {
+    FallProtection,
+    Overcurrent,
     /// Intents went stale; the velocity was zeroed.
     Deadman,
     /// A target was outside the actuator's travel.
@@ -109,6 +112,9 @@ pub struct Safety<T: RobotIo, U: ImuIo> {
     /// How long gravity has been past the threshold. Reset by any upright sample.
     falling_for: Duration,
     fallen: bool,
+    overcurrent_ticks: u32,
+    protection: Option<Limit>,
+    protection_torque_off: bool,
     /// Tracks the last gain written so an unchanged one is not rewritten every tick — that
     /// would be fifteen bus writes per tick for no reason.
     gain: Option<u16>,
@@ -122,12 +128,50 @@ impl<T: RobotIo, U: ImuIo> Safety<T, U> {
             config,
             falling_for: Duration::ZERO,
             fallen: false,
+            overcurrent_ticks: 0,
+            protection: None,
+            protection_torque_off: false,
             gain: None,
         }
     }
 
     pub fn read(&mut self) -> Result<Sensors, IoError> {
-        self.io.read()
+        let sensors = match self.io.read() {
+            Ok(sensors) => sensors,
+            Err(e) => {
+                self.overcurrent_ticks = 0;
+                self.falling_for = Duration::ZERO;
+                return Err(e);
+            }
+        };
+        if self.config.overcurrent_protection && self.protection.is_none() {
+            let total_a = sensors.input_current_a.unwrap_or_else(|| {
+                sensors.currents_ma.iter().map(|v| v.abs()).sum::<f64>() / 1000.0
+            });
+            if !total_a.is_finite() || total_a >= self.config.overcurrent_cutoff_a {
+                self.overcurrent_ticks = self.overcurrent_ticks.saturating_add(1);
+            } else {
+                self.overcurrent_ticks = 0;
+            }
+            if self.overcurrent_ticks >= self.config.overcurrent_debounce_ticks.max(1) {
+                self.protection = Some(Limit::Overcurrent);
+                tracing::error!(total_a, cutoff_a = self.config.overcurrent_cutoff_a,
+                    "overcurrent protection latched; restart robotd after clearing the fault");
+            }
+        }
+        Ok(sensors)
+    }
+
+    pub fn protection(&self) -> Option<Limit> {
+        self.protection
+    }
+
+    /// Retry failed torque-off writes even when there are no fresh sensor samples.
+    pub fn enforce_protection(&mut self) -> Result<(), IoError> {
+        if self.protection.is_some() && !self.protection_torque_off {
+            self.set_torque(false)?;
+        }
+        Ok(())
     }
 
     /// Bus reads that are not part of the tick, passed through rather than exposing the IO.
@@ -174,12 +218,17 @@ impl<T: RobotIo, U: ImuIo> Safety<T, U> {
     ///  - It is called when a human enables the policy on a limp robot, once, not per tick.
     ///  - It is **not** called at startup. A `robotd` restarted by an update must leave a standing
     ///    robot standing, and nothing here changes that.
-    ///  - It does not bypass anything. Torque decides whether the motors hold what
-    ///    [`Self::apply`] writes; every clamp, the fall gate and the limp gain still apply to *what*
-    ///    gets written. A fallen robot with torque on is still commanded `hold` at `gain_limp`.
+    ///  - A latched protection refuses torque-on until the daemon is restarted.
     pub fn set_torque(&mut self, on: bool) -> Result<(), IoError> {
+        if on && self.protection.is_some() {
+            return Err(IoError::Bus("safety protection latched; restart robotd after clearing the fault".into()));
+        }
         tracing::warn!(on, "torque");
-        self.io.set_torque(on)
+        self.io.set_torque(on)?;
+        if !on && self.protection.is_some() {
+            self.protection_torque_off = true;
+        }
+        Ok(())
     }
 
     /// The gain last written to the servos, or `None` before the first write. This is what
@@ -211,6 +260,11 @@ impl<T: RobotIo, U: ImuIo> Safety<T, U> {
         // is "not fallen", which is what the robot standing on the bench actually is; and a
         // filter that stops being ready mid-run leaves a fallen robot fallen.
         if !self.imu.ready() {
+            self.falling_for = Duration::ZERO;
+            return;
+        }
+        // A repeated sample adds no time, but must not erase a sustained tilt.
+        if self.imu.stale().run > 0 {
             return;
         }
 
@@ -223,6 +277,11 @@ impl<T: RobotIo, U: ImuIo> Safety<T, U> {
         } else {
             self.falling_for = Duration::ZERO;
             self.fallen = false;
+        }
+        if self.config.fall_protection && self.fallen && self.protection.is_none() {
+            self.protection = Some(Limit::FallProtection);
+            tracing::error!(gravity_z = sensors.imu.gravity[2],
+                "fall protection latched; restart robotd after standing the robot upright");
         }
     }
 
@@ -254,10 +313,11 @@ impl<T: RobotIo, U: ImuIo> Safety<T, U> {
     ) -> Result<Applied, IoError> {
         let mut applied = Applied::default();
 
-        // Note what is *not* here: a fall gate. Being down does not stop the caller
-        // driving, because the verdict is a report (see the module docs). What a fall is
-        // worth doing about is decided above, and arrives as ordinary targets and an
-        // ordinary gain.
+        if let Some(reason) = self.protection {
+            self.enforce_protection()?;
+            applied.limits.push(reason);
+            return Ok(applied);
+        }
         self.set_gain(running_gain)?;
 
         // Non-finite is refused, not clamped. Clamping `NaN` silently produces a boundary

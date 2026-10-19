@@ -23,6 +23,8 @@ pub struct Sensors {
     /// Present current magnitude, mA. Sign is dropped — direction is inferable from
     /// velocity, and every consumer so far wants load, not direction.
     pub currents_ma: [f64; NUM_JOINTS],
+    /// Estimated servo supply current, A; None falls back to summed phase currents.
+    pub input_current_a: Option<f64>,
     pub imu: ImuData,
 }
 
@@ -32,6 +34,7 @@ impl Default for Sensors {
             positions: [0.0; NUM_JOINTS],
             velocities: [0.0; NUM_JOINTS],
             currents_ma: [0.0; NUM_JOINTS],
+            input_current_a: None,
             imu: ImuData::default(),
         }
     }
