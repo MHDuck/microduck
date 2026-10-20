@@ -314,6 +314,24 @@ impl RobotIo for DynamixelIo {
             .map_err(|e| IoError::Bus(format!("sync_write goal positions: {e}")))
     }
 
+    fn write_joint(&mut self, joint: usize, target: f64) -> Result<()> {
+        let id = *JOINT_IDS
+            .get(joint)
+            .ok_or_else(|| IoError::Bus(format!("joint index {joint} out of range")))?;
+        self.controller
+            .sync_write_goal_position(&[id], &[target])
+            .map_err(|e| IoError::Bus(format!("write goal position on {id}: {e}")))
+    }
+
+    fn set_joint_torque(&mut self, joint: usize, on: bool) -> Result<()> {
+        let id = *JOINT_IDS
+            .get(joint)
+            .ok_or_else(|| IoError::Bus(format!("joint index {joint} out of range")))?;
+        self.controller
+            .write_torque_enable(id, on)
+            .map_err(|e| IoError::Bus(format!("torque {on} on {id}: {e}")))
+    }
+
     fn set_torque(&mut self, on: bool) -> Result<()> {
         // The inherent method, which predates the trait and is still what `robotd init` uses.
         DynamixelIo::set_torque(self, on)

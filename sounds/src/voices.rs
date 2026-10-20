@@ -315,6 +315,67 @@ pub fn coo(p: &Personality, variant: u32) -> Vec<f32> {
     sig
 }
 
+/// A five-second, multi-phrase laugh: short voiced "ha" pulses with a rising middle and a
+/// relaxed landing. Keeping the duration fixed lets the walking client start the next laugh
+/// without cutting this one off or leaving a long silent gap.
+pub fn laugh(p: &Personality, variant: u32) -> Vec<f32> {
+    const DURATION_S: f64 = 5.0;
+    const SYLLABLES: usize = 14;
+
+    let mut rng = p.variant_rng("laugh", variant);
+    let mut p_laugh = *p;
+    p_laugh.brightness = (p_laugh.brightness + 0.18).min(0.75);
+    p_laugh.quackiness = p_laugh.quackiness.max(0.65);
+    p_laugh.attack_sharpness = p_laugh.attack_sharpness.max(0.65);
+    let base = p.pitch_center_hz * (1.02 + 0.12 * rng.random());
+    let mut sig = Vec::with_capacity((DURATION_S * f64::from(SR)) as usize);
+
+    for syllable in 0..SYLLABLES {
+        let dur = 0.25 + 0.03 * (syllable % 3) as f64;
+        let t = s::t_axis(dur);
+        let phrase_lift = match syllable {
+            0..=3 => syllable as f64 * 0.035,
+            4..=9 => 0.14 + (syllable - 4) as f64 * 0.025,
+            _ => 0.22 - (syllable - 10) as f64 * 0.045,
+        };
+        let bounce = if syllable % 2 == 0 { 0.04 } else { -0.025 };
+        let f0 = base * (1.0 + phrase_lift + bounce + rng.uniform(-0.025, 0.025));
+        let freq = s::lerp(
+            &t,
+            &[
+                (0.0, f0 * 0.90),
+                (dur * 0.24, f0 * 1.13),
+                (dur, f0 * 0.82),
+            ],
+        );
+        let env = s::expdecay(&t, attack(&p_laugh, dur, 1.0), dur * 0.52);
+        sig.extend(
+            voice(&p_laugh, &t, &freq, &mut rng, 0.9, 0.55)
+                .iter()
+                .zip(&env)
+                .map(|(&v, &e)| v * e),
+        );
+
+        if syllable + 1 < SYLLABLES {
+            let gap = if matches!(syllable, 3 | 7 | 10) {
+                0.14
+            } else {
+                0.055
+            };
+            sig.extend(std::iter::repeat_n(
+                0.0,
+                (gap * f64::from(SR)) as usize,
+            ));
+        }
+    }
+
+    let target_len = (DURATION_S * f64::from(SR)) as usize;
+    sig.resize(target_len, 0.0);
+    sig.truncate(target_len);
+    s::normalise(&mut sig, -3.0);
+    sig
+}
+
 /// (start, loop, end) for the held-trigger joy ride on roller blades.
 ///
 /// Rendered as ONE continuous master and sliced, so jitter / breath / wobble carry across
@@ -448,5 +509,13 @@ mod tests {
         // Adjacent samples of a −4 dBFS 48 kHz voice move far less than 0.2 full-scale;
         // an unfaded cut would routinely exceed it.
         assert!(step < 0.2, "loop seam step {step}");
+    }
+
+    #[test]
+    fn laugh_is_a_fixed_five_second_call() {
+        let p = Personality::from_seed(100);
+        let laugh = laugh(&p, 0);
+        assert_eq!(laugh.len(), 5 * SR as usize);
+        assert!(laugh.iter().any(|sample| sample.abs() > 0.3));
     }
 }

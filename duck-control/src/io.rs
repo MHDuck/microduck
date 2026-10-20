@@ -127,6 +127,15 @@ pub trait RobotIo {
     fn read(&mut self) -> Result<Sensors>;
     fn write(&mut self, targets: &JointTargets) -> Result<()>;
 
+    /// Command one joint without touching any other servo on the bus.
+    ///
+    /// The mouth uses this while the body is limp: speech must not require enabling a
+    /// walking policy or energising the other fourteen joints.
+    fn write_joint(&mut self, joint: usize, target: f64) -> Result<()>;
+
+    /// Enable or disable torque on one joint only.
+    fn set_joint_torque(&mut self, joint: usize, on: bool) -> Result<()>;
+
     /// Set the position P gain on every joint.
     ///
     /// Here rather than in the bus layer alone because it is what makes "go limp" mean
@@ -192,6 +201,8 @@ pub struct FakeIo {
     pub last_written: Option<JointTargets>,
     pub reads: usize,
     pub writes: usize,
+    /// Last isolated joint command, used by mouth-only tests.
+    pub last_joint_written: Option<(usize, f64)>,
     /// Last gain commanded, so a test can tell "went limp" from "stopped commanding".
     pub last_gain: Option<u16>,
     /// What [`RobotIo::slow_sensors`] reports. Mid-pack and hand-warm by default so `--fake`
@@ -206,6 +217,8 @@ pub struct FakeIo {
     /// How many times torque was written, so a test can tell "brought up once" from "written every
     /// tick" — the latter being a bus transaction per joint per tick.
     pub torque_writes: usize,
+    /// Last isolated joint torque command.
+    pub last_joint_torque: Option<(usize, bool)>,
 }
 
 impl Default for FakeIo {
@@ -223,6 +236,7 @@ impl FakeIo {
             last_written: None,
             reads: 0,
             writes: 0,
+            last_joint_written: None,
             last_gain: None,
             slow: Some(SlowSensors {
                 volts: 7.4,
@@ -231,6 +245,7 @@ impl FakeIo {
             track_targets: true,
             torque: None,
             torque_writes: 0,
+            last_joint_torque: None,
         }
     }
 
@@ -284,6 +299,25 @@ impl RobotIo for FakeIo {
         if self.track_targets {
             self.sensors.positions = targets.positions;
         }
+        Ok(())
+    }
+
+    fn write_joint(&mut self, joint: usize, target: f64) -> Result<()> {
+        if joint >= NUM_JOINTS {
+            return Err(IoError::Bus(format!("joint index {joint} out of range")));
+        }
+        self.last_joint_written = Some((joint, target));
+        if self.track_targets {
+            self.sensors.positions[joint] = target;
+        }
+        Ok(())
+    }
+
+    fn set_joint_torque(&mut self, joint: usize, on: bool) -> Result<()> {
+        if joint >= NUM_JOINTS {
+            return Err(IoError::Bus(format!("joint index {joint} out of range")));
+        }
+        self.last_joint_torque = Some((joint, on));
         Ok(())
     }
 

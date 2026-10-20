@@ -169,7 +169,12 @@ pub const JSONRPC_VERSION: &str = "2.0";
 /// older `robotctl` against this `configd` prints no `units` block at all rather than a wrong one.
 /// Both come out of the same release and an apply restarts both, so the skew lasts as long as the
 /// update does; a board left mid-update sees a missing block, not a lie.
-pub const API_VERSION: u32 = 17;
+///
+/// # v18 — the long laugh voice tag
+///
+/// `SoundTag::Laugh` adds the five-second laugh generated in the per-robot voice bank. Additive,
+/// and bumped because the version records that peers were built from different releases.
+pub const API_VERSION: u32 = 18;
 
 /// The longest an update may legitimately go quiet, in seconds — the pre-install hook's ceiling.
 ///
@@ -1573,6 +1578,8 @@ pub enum SoundTag {
     Chirp,
     /// Drowsy, breathy — the petting response.
     Coo,
+    /// A long, multi-phrase laugh.
+    Laugh,
     /// The held joy ride: start → loop while held → end.
     Wheee,
 }
@@ -1587,6 +1594,7 @@ impl SoundTag {
             SoundTag::Peck => "peck",
             SoundTag::Chirp => "chirp",
             SoundTag::Coo => "coo",
+            SoundTag::Laugh => "laugh",
             SoundTag::Wheee => "wheee",
         }
     }
