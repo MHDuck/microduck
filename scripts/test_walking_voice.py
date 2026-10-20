@@ -48,6 +48,10 @@ class FakeVoice:
 
 
 class WalkingVoiceTests(unittest.TestCase):
+    def test_walking_defaults_to_back_to_back_laughter(self):
+        self.assertEqual(keyboard_control.DEFAULT_WALK_EMOTIONS, "laughing")
+        self.assertEqual(keyboard_control.DEFAULT_VOICE_GAP_S, 0.0)
+
     def test_only_nonzero_enabled_commands_count_as_walking(self):
         self.assertFalse(keyboard_control.is_walking(False, (0.2, 0.0, 0.0)))
         self.assertFalse(keyboard_control.is_walking(True, (0.0, 0.0, 0.0)))
@@ -79,6 +83,32 @@ class WalkingVoiceTests(unittest.TestCase):
             worker.set_moving(True)
             self.assertTrue(voice.played_event.wait(0.5))
             worker.set_moving(False)
+        finally:
+            worker.close()
+
+    def test_one_zero_gap_emotion_repeats_only_while_moving(self):
+        voice = FakeVoice()
+        worker = keyboard_control.WalkingVoice(
+            "/tmp/not-used.sock",
+            ("happy",),
+            0.0,
+            0.0,
+            enabled=True,
+            voice_module=voice,
+            rng=random.Random(1),
+        )
+        try:
+            worker.set_moving(True)
+            deadline = time.monotonic() + 0.5
+            while len(voice.played) < 2 and time.monotonic() < deadline:
+                time.sleep(0.005)
+            self.assertGreaterEqual(len(voice.played), 2)
+
+            worker.set_moving(False)
+            time.sleep(0.03)
+            stopped_count = len(voice.played)
+            time.sleep(0.03)
+            self.assertEqual(len(voice.played), stopped_count)
         finally:
             worker.close()
 

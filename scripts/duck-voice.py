@@ -20,10 +20,20 @@ import time
 from typing import Callable, Iterable
 
 
-API_VERSION = 17
+API_VERSION = 18
 DEFAULT_SOCKET = Path("/run/robotd.sock")
 DEFAULT_RATE_HZ = 50.0
 MOUTH_TAU_S = 0.09
+
+
+def _laugh_keyframes() -> tuple[tuple[float, float], ...]:
+    frames: list[tuple[float, float]] = [(0.0, 0.0)]
+    for index in range(14):
+        start = index * 0.34
+        strength = 0.78 + 0.12 * math.sin(index * 0.8)
+        frames.extend(((start + 0.035, strength), (start + 0.25, 0.12)))
+    frames.append((5.0, 0.0))
+    return tuple(frames)
 
 
 @dataclass(frozen=True)
@@ -75,6 +85,12 @@ EMOTIONS: dict[str, Cue] = {
         0.40,
         ((0.00, 0.00), (0.025, 0.58), (0.16, 0.24), (0.40, 0.00)),
     ),
+    "laughing": Cue(
+        "laugh",
+        "连续大笑",
+        5.00,
+        _laugh_keyframes(),
+    ),
 }
 
 
@@ -85,6 +101,7 @@ SOUND_TO_EMOTION = {
     "coo": "sad",
     "alarm": "alarm",
     "peck": "goodbye",
+    "laugh": "laughing",
 }
 
 

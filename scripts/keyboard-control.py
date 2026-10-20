@@ -27,6 +27,8 @@ except ImportError:  # Unit-testable on Windows; the interactive program remains
 
 # Same order as duck_control::model::JOINT_IDS.
 JOINT_IDS = (20, 21, 22, 23, 24, 30, 31, 32, 33, 34, 10, 11, 12, 13, 14)
+DEFAULT_WALK_EMOTIONS = "laughing"
+DEFAULT_VOICE_GAP_S = 0.0
 
 
 class VoiceInterrupted(RuntimeError):
@@ -54,7 +56,7 @@ def choose_emotion(emotions, previous, rng):
 
 
 class WalkingVoice:
-    """Play varied voice cues on a second robotd connection while movement is commanded."""
+    """Continuously play configured voice cues while movement is commanded."""
 
     def __init__(
         self,
@@ -169,15 +171,15 @@ def main():
                         help="自定义 socket 退出时只请求卸力；默认 socket 退出时停止 robotd 服务。")
     parser.add_argument("--log-dir", default="logs", help="电流 CSV 日志目录，默认当前目录下的 logs。")
     parser.add_argument("--walk-voice", action="store_true",
-                        help="启动时开启行走随机发声；运行中按 V 可随时切换。")
-    parser.add_argument("--voice-emotions", default="happy,greeting,curious,sad,goodbye",
-                        help="随机情绪列表，逗号分隔；默认不使用 alarm。")
-    parser.add_argument("--voice-gap-min", type=float, default=0.25,
-                        help="两段声音的最短间隔秒数，默认 0.25。")
-    parser.add_argument("--voice-gap-max", type=float, default=0.80,
-                        help="两段声音的最长间隔秒数，默认 0.80。")
+                        help="启动时开启行走连续发声；运行中按 V 可随时切换。")
+    parser.add_argument("--voice-emotions", default=DEFAULT_WALK_EMOTIONS,
+                        help="情绪列表，逗号分隔；默认只播放五秒大笑。")
+    parser.add_argument("--voice-gap-min", type=float, default=DEFAULT_VOICE_GAP_S,
+                        help="两段声音的最短间隔秒数，默认 0。")
+    parser.add_argument("--voice-gap-max", type=float, default=DEFAULT_VOICE_GAP_S,
+                        help="两段声音的最长间隔秒数，默认 0。")
     parser.add_argument("--voice-sound-only", action="store_true",
-                        help="随机讲话只发声，不控制嘴部。")
+                        help="行走发声时只播放声音，不控制嘴部。")
     args = parser.parse_args()
     if termios is None or tty is None:
         parser.error("keyboard-control.py 只能在 Linux/WSL/板端终端运行")
@@ -232,7 +234,7 @@ def main():
                     raise RuntimeError(result.get("reason", "robotd 拒绝了指令"))
                 return result
 
-            call("hello", {"api_version": 17})
+            call("hello", {"api_version": 18})
             call("robot.stop", {})
             print("托住机器人，按 Enter 启用模型。")
             print("W/S 每次增减 vx 0.10 m/s（范围 -0.40～+0.40），松开保持；长按会连续调速。")
@@ -319,7 +321,7 @@ def main():
                                     current_socket.settimeout(1.0)
                                     current_socket.connect(args.socket)
                                     for ident, method, params in (
-                                        (1, "hello", {"api_version": 17}), (2, "robot.subscribe", {}),
+                                        (1, "hello", {"api_version": 18}), (2, "robot.subscribe", {}),
                                     ):
                                         current_socket.sendall((json.dumps({
                                             "jsonrpc": "2.0", "id": ident, "method": method, "params": params,

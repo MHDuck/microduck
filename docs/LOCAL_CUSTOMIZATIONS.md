@@ -8,12 +8,12 @@
 
 保留：
 
-- `scripts/duck-voice.py`：复用 robotd 官方 voice bank，支持 happy/greeting/curious/sad/
-  alarm/goodbye，选择性同步嘴部。
+- `scripts/duck-voice.py`：复用 robotd voice bank，支持 happy/greeting/curious/sad/
+  alarm/goodbye/laughing，选择性同步嘴部。
 - 嘴部独立控制：机器人全身未启用时，`robot.mouth` 只给第 15 个嘴部舵机上力和写目标，
   不启用策略、不触碰其余 14 个舵机；500 ms 无新嘴部帧后释放嘴部扭矩。
-- `scripts/keyboard-control.py` 的行走随机讲话：走路命令非零时连续随机说话，停走立即停止
-  新话语并闭嘴；主控制与发声使用独立 robotd 连接/线程。
+- `scripts/keyboard-control.py` 的行走连续大笑：走路命令非零时连续播放五秒大笑，停走立即
+  停止新一段并闭嘴；主控制与发声使用独立 robotd 连接/线程。
 - `scripts/camera-detect-test.py`：只读验证官方摄像头流和 MicroDuck detector，不连接
   robotd、不控制舵机。
 
@@ -37,23 +37,48 @@ sudo python3 /opt/robot/daemon/current/scripts/duck-voice.py \
   --emotion greeting --sound-only
 ```
 
-支持的情绪：`happy`、`greeting`、`curious`、`sad`、`alarm`、`goodbye`。这不是文本转语音，
-而是对官方声音库的情绪化组合；指定任意文本需要后续单独引入 TTS 和音频播放接口。
+支持的情绪：`happy`、`greeting`、`curious`、`sad`、`alarm`、`goodbye`、`laughing`。
+这不是文本转语音，而是对合成声音库的情绪化组合；指定任意文本需要后续单独引入 TTS
+和音频播放接口。`laughing` 是本地新增的固定 5 秒、多段落大笑。
 
 安全语义：`--sound-only` 连“闭嘴”命令也不发，因为 `open=0` 同样会让独立嘴部路径给舵机
 上力。嘴部动画模式在异常/中断时会显式闭嘴。
 
-## 3. 行走时随机讲话
+### 声音文件与音量
+
+`duck-voice.py` 本身不包含录音，也不直接播放文件。它把 `happy`、`greeting` 等情绪映射成
+`chirp`、`greet` 等 `robot.sound` 标签；`robotd` 收到标签后，从
+`/var/lib/robot/sounds/<tag>/` 随机选择一个 WAV。WAV 不是仓库里的固定录音，而是安装时由
+`sounds ensure-bank` 根据 SoC 序列号合成的每机专属 voice bank。合成配方在
+`sounds/src/voices.rs`，文件布局与生成逻辑在 `sounds/src/lib.rs`。
+
+本地 v7 voice bank 在写 WAV 前统一增加 3 dB 数字增益。原来最响的配方峰值为 -3 dBFS，
+因此这一级增益能用满数字量程而不削波；3 dB 不是软件可设置的绝对上限，而是当前素材
+还能直接线性放大且不削波的上限。若继续增加数字增益，需要同时加入压缩/软限幅，否则只会
+削掉波峰并增加失真。部署新版本时 marker 版本变化会自动重生成声音库，也可在板端手动
+执行：
+
+```bash
+sudo /opt/robot/daemon/current/bin/sounds ensure-bank --force
+```
+
+板上功放是 MAX98357A，只有 I2S 音频输入，没有 I2C 或 ALSA mixer 音量寄存器；当前
+`microduck-i2s3-m0.dts` 也使用 dummy codec。因此 `amixer` 不能继续提高扬声器功放增益。
+若数字音频已接近满幅仍不够响，需要按实际功放模块/原理图调整 MAX98357A 的 GAIN 引脚
+配置，或更换灵敏度更高且阻抗、功率匹配的扬声器；修改前先确认模块型号、供电、电阻配置
+和扬声器额定参数，避免削波、过热或损坏扬声器。
+
+## 3. 行走时连续大笑
 
 ```bash
 sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py --walk-voice
 ```
 
 - Enter：启用模型；W/S 调整前后速度；A/D 横移；Q/E 转向；空格速度归零。
-- V：运行中开关随机讲话。未传 `--walk-voice` 时也可按 V 开启。
+- V：运行中开关行走发声。未传 `--walk-voice` 时也可按 V 开启。
 - 只要 `vx/vy/vyaw` 任一非零就认为正在行走；速度归零、禁用或退出时不再开始下一段声音。
-- 相邻两次不会选择相同情绪，默认排除较刺耳的 `alarm`。
-- 默认话语间隔随机 0.25～0.80 s。连续走会持续讲话，但不会重叠播放。
+- 默认只播放固定 5 秒的 `laughing`，段间隔为 0；连续走会一段接一段大笑，但不会重叠。
+- 停走时会立即闭嘴并且不再开始下一段；已经交给 ALSA 的当前大笑会自然播放到结尾。
 
 可选参数：
 
@@ -62,7 +87,7 @@ sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py --walk-voice
 sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py \
   --walk-voice --voice-sound-only
 
-# 自定义情绪和间隔
+# 恢复原来的随机情绪和间隔
 sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py \
   --walk-voice \
   --voice-emotions happy,greeting,curious \
@@ -110,11 +135,57 @@ http://10.138.16.248:8080/
 
 ## 5. 本地测试
 
+### 独立测试 StandUp（不修改正式配置）
+
+`policies/standup_hd1910.onnx` 已随模型上传，但正式配置的 `policy.stand = "none"`，
+所以当前正常行走不会调用它。`robot.init` 只做 HOME 上力/过渡，也不代表 StandUp 推理。
+
+`scripts/standup-test.py` 使用当前板端配置生成临时配置：`walk` 和 `stand` 都指向本次
+StandUp 模型（正常零命令时策略标签为 `stand`），关闭 SitStand/其他技能、声音与 chorale，
+并在这次进程中关闭 `fall_protection` 和 `limp_fall`，避免打断地面起身。舵机增益、动作缩放、
+IMU 和过流配置沿用原文件。正式配置、模型和 daemon 二进制均不改动。
+
+板端先检查，不会打开硬件：
+
+```bash
+sudo python3 /opt/robot/daemon/current/scripts/standup-test.py --check
+```
+
+实际测试（先托住机器人；停止 daemon 或测试结束卸力时机器人会失去支撑）：
+
+```bash
+sudo systemctl stop padd robotd
+# 如果 servo-web.service 正在运行，也需要先停止它。
+sudo python3 /opt/robot/daemon/current/scripts/standup-test.py --seconds 10
+```
+
+脚本启动独立 socket 的测试 daemon，模型与 IMU 就绪后等待 Enter。把机器人放到趴倒、
+仰倒或坐倒姿态，再按 Enter。启用后约 2 秒先回 HOME，之后执行 StandUp；默认 10 秒包含
+这段过渡。终端显示实际策略和重力向量。时间到、Ctrl-C 或 SSH 挂断会请求 `robot.relax`，
+然后结束测试进程；daemon 日志保留在打印的 `/tmp/standup-test-*.log`。脚本只确认模型有执行，
+恢复是否成功由实际观察判断。趴倒、仰倒、坐倒应分三次测试。
+
+模型和试验时间可逐次指定，无需手改文件：
+
+```bash
+sudo python3 /opt/robot/daemon/current/scripts/standup-test.py \
+  --model /opt/robot/daemon/current/policies/standup_hd1910.onnx --seconds 12
+
+# 每次测试结束后服务保持停止；准备好后手动恢复日常 daemon。
+sudo systemctl start robotd
+# 日常需要手柄时再执行 sudo systemctl start padd
+```
+
+这是独立起身模型测试，尚未将 StandUp 接入日常行走的自动倒地恢复状态机。
+
+### 自动化回归
+
 ```bash
 python3 -m unittest \
   scripts/test_duck_voice.py \
   scripts/test_walking_voice.py \
-  scripts/test_camera_detect.py
+  scripts/test_camera_detect.py \
+  scripts/test_standup_test.py
 
 cargo fmt --all --check
 cargo test -p duck-control

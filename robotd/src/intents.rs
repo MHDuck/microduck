@@ -331,6 +331,7 @@ impl Intents {
             SoundTag::Peck,
             SoundTag::Chirp,
             SoundTag::Coo,
+            SoundTag::Laugh,
         ]
         .into_iter()
         .filter(|tag| bits & (1u32 << (*tag as u32)) != 0)
@@ -549,6 +550,18 @@ mod tests {
             hold: Some(false),
         });
         assert_eq!(intents.wheee_hold(), WheeeHold::Released);
+    }
+
+    #[test]
+    fn laugh_is_queued_as_a_one_shot_sound() {
+        use duck_ipc_proto::{SoundParams, SoundTag};
+        let intents = Intents::new();
+        intents.request_sound(SoundParams {
+            tag: SoundTag::Laugh,
+            hold: None,
+        });
+        assert_eq!(intents.take_sounds(), vec![SoundTag::Laugh]);
+        assert!(intents.take_sounds().is_empty());
     }
 
     /// Before any client has spoken, the twist must already look stale. A robot that comes

@@ -6,8 +6,8 @@
 //! **variants** (small re-rolls within the same voice) so the duck doesn't sound like a
 //! stuck recording.
 //!
-//! Tags: `alarm`, `greet`, `inquire`, `peck`, `chirp`, `coo`, `wheee`. `wheee` is segmented
-//! (start / loop / end) so `robotd` can stream it for as long as the ride lasts.
+//! Tags: `alarm`, `greet`, `inquire`, `peck`, `chirp`, `coo`, `laugh`, `wheee`. `wheee` is
+//! segmented (start / loop / end) so `robotd` can stream it for as long as the ride lasts.
 //!
 //! ## Ported from Python, and what that changed
 //!
@@ -39,20 +39,29 @@ pub use synth::SR;
 
 /// Bump when the synth changes enough that existing banks should re-render on the next
 /// install — the `.seed` marker includes it, so old banks stop matching and regenerate.
-/// v4 was the last Python bank; v5 is the Rust port (new RNG, 48 kHz native).
-pub const BANK_VERSION: u32 = 5;
+/// v4 was the last Python bank; v5 is the Rust port (new RNG, 48 kHz native); v6 raises the
+/// rendered voice bank by 3 dB for the HD1910 speaker path; v7 adds the long laugh.
+pub const BANK_VERSION: u32 = 7;
+
+/// Final gain applied to every pre-rendered voice-bank sound.
+///
+/// The loudest recipes peak at -3 dBFS, so +3 dB uses the available digital range without
+/// clipping them. Softer calls keep their relative level. This affects the WAV bank only;
+/// MAX98357A amplifier gain is fixed by the board's GAIN pin and cannot be changed by ALSA.
+pub const VOICE_BANK_GAIN_DB: f64 = 3.0;
 
 /// A recipe: personality + variant in, f32 mono at [`SR`] out.
 pub type Recipe = fn(&Personality, u32) -> Vec<f32>;
 
 /// Every tag and its recipe. Order is the render order, nothing more.
-pub const TAGS: [(&str, Recipe); 7] = [
+pub const TAGS: [(&str, Recipe); 8] = [
     ("alarm", voices::alarm),
     ("greet", voices::greet),
     ("inquire", voices::inquire),
     ("peck", voices::peck),
     ("chirp", voices::chirp),
     ("coo", voices::coo),
+    ("laugh", voices::laugh),
     ("wheee", voices::wheee),
 ];
 
@@ -62,7 +71,7 @@ pub const TAGS: [(&str, Recipe); 7] = [
 pub fn variant_count(tag: &str) -> u32 {
     match tag {
         "greet" | "chirp" => 12,
-        "wheee" => 6,
+        "laugh" | "wheee" => 6,
         _ => 10,
     }
 }
@@ -74,7 +83,16 @@ pub fn render(tag: &str, p: &Personality, variant: u32) -> Result<Vec<f32>> {
         .find(|(name, _)| *name == tag)
         .map(|(_, f)| f)
         .with_context(|| format!("unknown tag {tag:?}"))?;
-    Ok(recipe(p, variant))
+    let mut buffer = recipe(p, variant);
+    apply_voice_bank_gain(&mut buffer);
+    Ok(buffer)
+}
+
+fn apply_voice_bank_gain(buffer: &mut [f32]) {
+    let gain = 10.0f64.powf(VOICE_BANK_GAIN_DB / 20.0) as f32;
+    for sample in buffer {
+        *sample = (*sample * gain).clamp(-1.0, 1.0);
+    }
 }
 
 /// Write a buffer as a 16-bit mono wav at [`SR`].
@@ -106,7 +124,10 @@ pub fn render_all(p: &Personality, out_dir: &Path) -> Result<Vec<PathBuf>> {
         for variant in 0..variant_count(tag) {
             let letter = char::from(b'a' + variant as u8);
             if tag == "wheee" {
-                let (start, loop_seg, end) = voices::wheee_segments(p, variant);
+                let (mut start, mut loop_seg, mut end) = voices::wheee_segments(p, variant);
+                apply_voice_bank_gain(&mut start);
+                apply_voice_bank_gain(&mut loop_seg);
+                apply_voice_bank_gain(&mut end);
                 for (name, buf) in [("start", start), ("loop", loop_seg), ("end", end)] {
                     let path = out_dir.join(tag).join(format!("{tag}_{name}_{letter}.wav"));
                     to_wav(&buf, &path)?;
@@ -167,12 +188,28 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sounds-test-{}", std::process::id()));
         let p = Personality::from_seed(100);
         let paths = render_all(&p, &dir).unwrap();
-        // 6 one-shot tags × their variants + wheee (6 × 3 segments).
-        let expected = 10 + 12 + 10 + 10 + 12 + 10 + 6 * 3;
+        // 7 one-shot tags × their variants + wheee (6 × 3 segments).
+        let expected = 10 + 12 + 10 + 10 + 12 + 10 + 6 + 6 * 3;
         assert_eq!(paths.len(), expected);
         assert!(dir.join("chirp/chirp_a.wav").exists());
         assert!(dir.join("chirp/chirp_l.wav").exists(), "12 chirp variants");
         assert!(dir.join("wheee/wheee_loop_f.wav").exists());
+        assert!(dir.join("laugh/laugh_f.wav").exists());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rendered_bank_applies_the_global_gain_without_clipping() {
+        let p = Personality::from_seed(100);
+        let raw = voices::greet(&p, 0);
+        let rendered = render("greet", &p, 0).unwrap();
+        let raw_peak = raw.iter().fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+        let rendered_peak = rendered
+            .iter()
+            .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+        let expected = raw_peak * 10.0f32.powf(VOICE_BANK_GAIN_DB as f32 / 20.0);
+
+        assert!((rendered_peak - expected).abs() < 1e-5);
+        assert!(rendered.iter().all(|sample| (-1.0..=1.0).contains(sample)));
     }
 }
