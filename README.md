@@ -33,6 +33,146 @@ The policies it runs are trained next door, in
 **[microduck_rl](https://github.com/pollen-robotics/microduck_rl)** — MuJoCo and PPO, the sim2real
 recipe, and the export to ONNX that this repo loads.
 
+## 飞特分支：蓝牙手柄配对、控制与模型
+
+使用 `scripts/provision-board.sh` 完成整机安装后，手柄直接配对到机器人板子。
+安装程序默认启用 `padd.service`，配对成功后由它读取输入；断开 SSH 不影响控制。
+`configd` 负责蓝牙配对，`padd` 负责手柄输入，`robotd` 负责运动策略和舵机。
+`btd` 是手机等客户端使用的 BLE 服务，手柄输入不经过它。
+
+### 配对与连接检查
+
+先让手柄进入配对模式：
+
+- **Xbox**：短按 Xbox 键开机，再长按顶部 Sync 小按钮，直到指示灯快速闪烁。
+  慢闪表示开机但未进入配对模式；长按 Xbox 键会关机。
+- **DualSense**：同时按住 Create 和 PS，直到灯条闪烁。
+
+在**板子的终端**执行：
+
+```bash
+sudo robotctl pad pair
+robotctl pad status
+```
+
+正常应看到手柄 `connected`、`padd active`。配对会同时设置信任，以后打开手柄可自动重连。
+发现多个待配对手柄时需要指定 MAC；遗忘后重新配对，需要再次让手柄进入配对模式：
+
+```bash
+sudo robotctl pad pair AA:BB:CC:DD:EE:FF
+sudo robotctl pad forget AA:BB:CC:DD:EE:FF
+```
+
+上面两条分别用于指定配对和遗忘绑定，按需执行。
+
+如果此前启动过 `servo-web`，它会停止 `padd`、`mediad`、`robotd`、`tofd`。
+先托稳机器人，再切回手柄控制：
+
+```bash
+sudo systemctl stop servo-web
+sudo systemctl start robotd padd
+```
+
+### 按键映射与对应模型
+
+配对后按 **Start** 启用运动策略，再操作摇杆。以下使用 Xbox 按键名称；
+默认步行模式下，摇杆死区为 `0.1`，前后及横移速度上限为 `0.3 m/s`，转速上限为 `1.5 rad/s`。
+
+| 操作 | 功能 | 模型或控制方式 |
+|---|---|---|
+| Start | 开启／关闭运动策略；关闭时回默认姿态，不是关闭力矩 | 开关策略执行 |
+| 左摇杆上下 | 前进／后退 | 共用 `walk`，改变 `vx` |
+| 左摇杆左右 | 左右横移 | 共用 `walk`，改变 `vy` |
+| 右摇杆左右 | 左右转向 | 共用 `walk`，改变 `vyaw` |
+| 松开摇杆 | 速度指令归零 | 配置了 `stand` 时可自动选择站立模型，否则仍使用 `walk` |
+| Y | 切换头部模式，再按退出；左摇杆控制头部俯仰／偏航，右摇杆控制颈部俯仰／头部侧倾 | 头部目标角度作为模型输入，没有单独的“摇头模型” |
+| B | 切换身体姿态模式，再按退出；左摇杆上下控制高度，右摇杆控制俯仰／侧倾 | 改变身体姿态输入，配置了 `stand` 时使用站立模型 |
+| A | 地面拾取 | `ground_pick` |
+| LB / RB | 左／右踢腿 | `kick_left` / `kick_right` |
+| X | 前滚翻，长按连续翻滚 | `roulade` |
+| 方向键下 | 坐下／站起 | 共用 `sitstand`，通过姿态指令区分坐和站 |
+| RT / LT | 张嘴；RT 同时触发叫声，LT 按住播放 wheee | 嘴部舵机和声音控制，不经过运动模型 |
+| 方向键上长按 3 秒 | 切换步行／轮式模式 | 回默认姿态后重新加载目标模式的模型组合 |
+| Select 长按 2 秒 | 请求坐下后关机 | 由 `robotd` 执行关机流程，坐下动作依赖对应策略 |
+
+Y 和 B 模式期间行走速度归零。轮式模式使用独立的摇杆映射，不支持横移；
+运行中切换模式不会修改配置文件，重启后仍使用配置中的模式。
+
+**按键映射存在，不代表对应动作模型已经启用。** `robotd` 启动时一次加载并预热已配置的模型；
+普通动作按键只是让控制循环选择已加载的模型推理，不会每按一次重新读取 ONNX 文件。
+模型每拍结合传感器状态和控制指令计算关节目标，动作不是预录的舵机轨迹。
+
+截至 2026-10-19，仓库 [deploy/robotd.toml](deploy/robotd.toml) 的配置为：
+
+```toml
+[policy]
+enabled = true
+mode = "walk"
+walk = "/opt/robot/daemon/current/policies/walk_hd1910_flat_v5.onnx"
+stand = "none"
+sitstand = "/opt/robot/daemon/current/policies/sitstand_hd1910.onnx"
+ground_pick = "none"
+kick_left = "none"
+kick_right = "none"
+roulade = "none"
+```
+
+这份配置加载行走和坐站两个模型，没有启用独立站立、拾取、踢腿或翻滚模型。
+缺少动作模型时请求会被拒绝，并提示 `no policy configured for that skill`。
+头部和身体姿态的实际响应也取决于所用模型的训练能力，不能仅凭按键映射判断支持情况。
+板子实际配置以 `/etc/robot/robotd.toml` 为准；修改模型路径后需要重启 `robotd`。
+
+### 配不上或配上后没有响应
+
+Radxa 的 aic8800 蓝牙模块可能需要在建立新绑定时暂停 `btd`。如果正常配对失败，
+可在电脑端使用安装脚本的配对兼容参数（替换板子地址）：
+
+```bash
+./scripts/provision-board.sh --pause-btd-on-pair radxa@192.168.1.42
+```
+
+该参数留下 `/var/lib/robot/weird-ble` 标记，使 `robotctl pad pair` 在配对期间暂停 `btd`、
+将蓝牙适配器断电再上电，并在结束后恢复原先运行的 `btd`。
+仍无法建立绑定时才考虑 `--weird-ble`，它还会设置 `Privacy = device`。
+若配对后反复掉线并出现 `PIN or Key Missing (0x06)`，可能需要改回 `Privacy = off` 并重新配对。
+仅移除安装命令中的参数不会撤销已有设置，具体切换步骤见
+[安装说明](docs/robot/install-dev.md#the-three-configurations-and-how-to-tell-which-you-have)。
+该板子的排障记录不建议用 `systemctl restart bluetooth` 代替适配器断电／上电，
+否则可能出现没有可用适配器、必须重启板子才能恢复的情况。
+
+配对后没有响应时，在板端检查：
+
+```bash
+robotctl pad status
+journalctl -u configd -u padd -u robotd -b -n 80 --no-pager
+robotctl monitor
+```
+
+在 monitor 中按 `p` 打开手柄原始输入，移动摇杆应看到数值变化。
+手柄连接、输入数据、运动服务和模型加载是不同环节；输入正常时还需确认已经按 Start 启用策略，
+并查看是否存在模型缺失或保护锁定。完整配对和链路排障见 [手柄配对说明](docs/robot/pair-a-gamepad.md)。
+
+### 对应代码入口
+
+```text
+蓝牙手柄 → BlueZ / Linux 输入设备 → padd（gilrs 读取，默认 50 Hz）
+        → /run/robotd.sock → robotd → 选择模型并推理 → 舵机
+```
+
+| 文件／入口 | 负责内容 |
+|---|---|
+| [scripts/install.sh](scripts/install.sh) | 安装并启用 `padd.service` 等服务 |
+| [scripts/setup-board.sh](scripts/setup-board.sh) 的 `configure_bluetooth` | 配对兼容标记与 Privacy 设置 |
+| [robotctl/src/main.rs](robotctl/src/main.rs) 的 `run_pad`、`BtdPaused` | `pad pair/status/forget` 命令，以及配对期间暂停 `btd`、重置适配器 |
+| [configd/src/bluez.rs](configd/src/bluez.rs) 的 `pair`、`bond` | 蓝牙扫描、连接、配对和信任 |
+| [padd/src/main.rs](padd/src/main.rs) 的 `Args`、按钮事件和 `Mode` 分支 | 频率、死区、速度上限、按键映射、摇杆映射与 IPC 指令 |
+| [padd/systemd/padd.service](padd/systemd/padd.service) | 手柄服务启动、输入设备权限和重启策略 |
+| [robotd/src/main.rs](robotd/src/main.rs) 的 `apply_intent`、`dispatch`、`build_controller` | 接收控制指令、处理动作请求、构建模型控制器 |
+| [robotd/src/control.rs](robotd/src/control.rs) | 动作调度以及 `Walk/Stand/SitStand/GroundPick/KickLeft/KickRight/Roulade` 的选择 |
+| [duck-control/src/policy.rs](duck-control/src/policy.rs) 的 `Policy::load`、`Policy::infer` | 加载、预热和调用 ONNX 模型 |
+| [duck-control/src/obs.rs](duck-control/src/obs.rs) | 把速度、头部、身体姿态等指令写入模型观测输入 |
+| [deploy/robotd.toml](deploy/robotd.toml) 的 `[policy]` | 模型文件路径和启用配置 |
+
 ## 飞特分支：倾倒保护与电流保护
 
 `robotd` 默认启用这两项保护，触发任一项会关闭全部 15 个舵机的力矩并锁定。

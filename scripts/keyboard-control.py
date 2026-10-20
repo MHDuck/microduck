@@ -19,6 +19,9 @@ import tty
 
 # Same order as duck_control::model::JOINT_IDS.
 JOINT_IDS = (20, 21, 22, 23, 24, 30, 31, 32, 33, 34, 10, 11, 12, 13, 14)
+# Same order and values as duck_control::model::DEFAULT_POSITION, in radians.
+HOME_POSITION = (0.0, -0.0873, -0.4579, -0.0049, 0.4530, 0.3491, 0.3491, 0.0, 0.0,
+                 0.0, 0.0, 0.0873, 0.4579, 0.0049, -0.4530)
 
 
 def main():
@@ -70,6 +73,7 @@ def main():
             print("W/S 每次增减 vx 0.10 m/s（范围 -0.40～+0.40），松开保持；长按会连续调速。")
             print("A/D 左右横移  Q/E 左右转（松开约 0.3 秒停止横移/转向）  空格速度归零  Esc/Ctrl-C 退出")
             print("T 坐下/站起切换（Enter 启用后使用，切换前速度归零；两次点按请间隔 1 秒以上）。")
+            print("每次 T 后打印 5 秒关节位置（5 Hz，14 个关节，实测 / HOME / 偏差，单位 rad）。")
             print("实时显示指令速度；vx 持续保持，按空格停止。")
             print("C 开始/停止实际策略、电流显示和 CSV 记录（可在启用模型之前开始）。")
             print("退出会卸力，请先托住机器人；默认连接还会停止 robotd 服务。")
@@ -79,6 +83,10 @@ def main():
             velocity = (0.0, 0.0, 0.0)
             expires = 0.0
             last_sit_key = 0.0
+            position_socket = None
+            position_buffer = b""
+            position_until = 0.0
+            position_samples = 0
             current_socket = None
             current_log = None
             current_status = ""
@@ -94,6 +102,8 @@ def main():
                 tty.setcbreak(terminal)
                 while True:
                     inputs = [terminal] + ([current_socket] if current_socket is not None else [])
+                    if position_socket is not None:
+                        inputs.append(position_socket)
                     readable, _, _ = select.select(inputs, [], [], 0.05)
                     if terminal in readable:
                         keys = os.read(terminal, 64)
@@ -120,9 +130,27 @@ def main():
                                     call("robot.stop", {})
                                     try:
                                         call("robot.do", {"skill": "sit_toggle"})
-                                        print("\r\033[K坐站请求已入队；按 C 查看实际策略（sit 坐下 / rise 站起 / walk 行走）。", flush=True)
                                     except RuntimeError as error:
                                         print(f"\r\033[K坐站切换失败：{error}", flush=True)
+                                    else:
+                                        position_started = time.monotonic()
+                                        position_until = position_started + 5.0
+                                        position_samples = 0
+                                        if position_socket is not None:
+                                            position_socket.close()
+                                        position_socket = socket.socket(socket.AF_UNIX)
+                                        position_socket.settimeout(1.0)
+                                        position_socket.connect(args.socket)
+                                        for ident, method, params in (
+                                            (1, "hello", {"api_version": 17}),
+                                            (2, "robot.subscribe", {"hz": 5}),
+                                        ):
+                                            position_socket.sendall((json.dumps({
+                                                "jsonrpc": "2.0", "id": ident, "method": method, "params": params,
+                                            }) + "\n").encode())
+                                        position_socket.setblocking(False)
+                                        position_buffer = b""
+                                        print("\r\033[K坐站请求已入队；开始打印 5 秒位置，偏差 = 实测 - HOME（rad）。", flush=True)
                                 last_sit_key = now
                             elif key == "c":
                                 if current_socket is not None:
@@ -170,6 +198,40 @@ def main():
                                 velocity = (velocity[0], *moves[key])
                                 # shortcut: terminal repeats replace key-up events; use evdev for exact release timing.
                                 expires = time.monotonic() + 0.30
+                    if position_socket is not None and position_socket in readable:
+                        chunk = position_socket.recv(65536)
+                        if not chunk:
+                            raise ConnectionError("关节位置状态流已断开")
+                        position_buffer += chunk
+                        while b"\n" in position_buffer:
+                            line, position_buffer = position_buffer.split(b"\n", 1)
+                            message = json.loads(line)
+                            if "error" in message or message.get("result", {}).get("accepted") is False:
+                                raise RuntimeError(f"位置订阅失败：{message}")
+                            if message.get("method") != "robot.state" or time.monotonic() >= position_until:
+                                continue
+                            state = message["params"]
+                            joints = state["joints"]
+                            if len(joints) != len(JOINT_IDS) or not all(
+                                isinstance(value, (int, float)) and math.isfinite(value) for value in joints
+                            ):
+                                print("\r\033[K位置反馈无效，跳过此帧。", flush=True)
+                                continue
+                            freshness = "新反馈" if state.get("current") is not None else "缓存反馈"
+                            rows = [f"\r\033[K[T+{time.monotonic() - position_started:.2f}s] "
+                                    f"策略={state['policy']} {freshness}",
+                                    " ID    实测(rad)    HOME(rad)    偏差(rad)"]
+                            for index, (ident, home) in enumerate(zip(JOINT_IDS, HOME_POSITION)):
+                                if ident == 34:
+                                    continue
+                                rows.append(f"{ident:3d} {joints[index]:+12.4f} {home:+12.4f} "
+                                            f"{joints[index] - home:+12.4f}")
+                            print("\n".join(rows), flush=True)
+                            position_samples += 1
+                    if position_socket is not None and time.monotonic() >= position_until:
+                        position_socket.close()
+                        position_socket = None
+                        print(f"\r\033[K5 秒位置打印结束，共 {position_samples} 组。", flush=True)
                     if current_socket is not None and current_socket in readable:
                         chunk = current_socket.recv(65536)
                         if not chunk:
@@ -239,6 +301,8 @@ def main():
                     signal.signal(signum, signal.SIG_IGN)
                 with suppress(termios.error):
                     termios.tcsetattr(terminal, termios.TCSANOW, saved)
+                if position_socket is not None:
+                    position_socket.close()
                 if current_socket is not None:
                     current_socket.close()
                 if current_log is not None:
