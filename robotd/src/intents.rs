@@ -13,7 +13,7 @@
 //! "how old is it". That is what the deadman reads.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 /// "No mode switch pending" in [`Intents::mode_switch`].
 ///
@@ -123,9 +123,12 @@ pub struct Intents {
     head: ArcSwap<Stamped<[f64; 4]>>,
     /// Standing body pose. Unstamped: `active: false` is its own "nobody is posing".
     pose: ArcSwap<PoseIntent>,
-    /// Mouth opening, 0..1, as `f64::to_bits`. Continuous like the twist, unstamped like
-    /// the pose — a mouth left open by a dead client is exactly what the prototype does.
-    mouth: std::sync::atomic::AtomicU64,
+    /// Mouth opening, 0..1, as `f64::to_bits`.
+    mouth: AtomicU64,
+    /// Timestamp and generation let the loop drive only the beak while the body is limp,
+    /// then release that one servo after the client stops animating it.
+    mouth_at_us: AtomicU64,
+    mouth_generation: AtomicU64,
     /// Whether the policy should drive. Discrete, so a plain flag rather than a slot.
     enabled: AtomicBool,
     /// A pending `robot.init` / `robot.relax`, as [`PowerRequest`].
@@ -192,6 +195,10 @@ pub struct Snapshot {
     pub pose: PoseIntent,
     /// Mouth opening, 0..1.
     pub mouth: f64,
+    /// Edge counter for isolated mouth commands.
+    pub mouth_generation: u64,
+    /// Age of the latest mouth notification. Used only to release isolated mouth torque.
+    pub mouth_age: Duration,
 }
 
 impl Default for Intents {
@@ -217,7 +224,9 @@ impl Intents {
                 at_us: 0,
             }),
             pose: ArcSwap::from_pointee(PoseIntent::default()),
-            mouth: std::sync::atomic::AtomicU64::new(0.0f64.to_bits()),
+            mouth: AtomicU64::new(0.0f64.to_bits()),
+            mouth_at_us: AtomicU64::new(0),
+            mouth_generation: AtomicU64::new(0),
             enabled: AtomicBool::new(false),
             power: AtomicU8::new(POWER_NONE),
             theremin: AtomicU8::new(THEREMIN_NONE),
@@ -263,8 +272,9 @@ impl Intents {
     }
 
     pub fn set_mouth(&self, open: f64) {
-        self.mouth
-            .store(open.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        self.mouth.store(open.to_bits(), Ordering::Relaxed);
+        self.mouth_at_us.store(self.now_us(), Ordering::Relaxed);
+        self.mouth_generation.fetch_add(1, Ordering::Release);
     }
 
     /// Queue a one-shot skill for the loop's next tick.
@@ -469,6 +479,8 @@ impl Intents {
         let twist = self.twist.load();
         let head = self.head.load();
         let pose = **self.pose.load();
+        let mouth_generation = self.mouth_generation.load(Ordering::Acquire);
+        let mouth_at_us = self.mouth_at_us.load(Ordering::Relaxed);
         Snapshot {
             command: Command {
                 twist: twist.value,
@@ -481,7 +493,9 @@ impl Intents {
             twist_age: Duration::from_micros(now.saturating_sub(twist.at_us)),
             enabled: self.enabled.load(Ordering::Relaxed),
             pose,
-            mouth: f64::from_bits(self.mouth.load(std::sync::atomic::Ordering::Relaxed)),
+            mouth: f64::from_bits(self.mouth.load(Ordering::Relaxed)),
+            mouth_generation,
+            mouth_age: Duration::from_micros(now.saturating_sub(mouth_at_us)),
         }
     }
 }
@@ -489,6 +503,20 @@ impl Intents {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mouth_notifications_have_an_edge_and_age_without_enabling_motion() {
+        let intents = Intents::new();
+        assert_eq!(intents.snapshot().mouth_generation, 0);
+
+        intents.set_mouth(0.75);
+        let after = intents.snapshot();
+        assert_eq!(after.mouth, 0.75);
+        assert_eq!(after.mouth_generation, 1);
+        assert!(after.mouth_age < Duration::from_millis(50));
+        assert_eq!(after.command.twist, [0.0; 3]);
+        assert!(!after.enabled);
+    }
 
     /// The hold's three states, which the ride's two different exits depend on. A `false`
     /// from a live client and a `true` that went stale must not read the same: one cuts the

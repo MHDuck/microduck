@@ -231,6 +231,25 @@ impl<T: RobotIo, U: ImuIo> Safety<T, U> {
         Ok(())
     }
 
+    /// Power one joint without changing the torque state of the rest of the robot.
+    pub fn set_joint_torque(&mut self, joint: usize, on: bool) -> Result<(), IoError> {
+        if on && self.protection.is_some() {
+            return Err(IoError::Bus(
+                "safety protection latched; isolated torque-on refused".into(),
+            ));
+        }
+        self.io.set_joint_torque(joint, on)
+    }
+
+    /// Command one isolated joint through the same finite/range checks as a full target set.
+    pub fn write_joint(&mut self, joint: usize, target: f64) -> Result<(), IoError> {
+        if !target.is_finite() {
+            return Err(IoError::Bus("non-finite isolated joint target".to_owned()));
+        }
+        self.io
+            .write_joint(joint, target.clamp(ACTUATOR_MIN, ACTUATOR_MAX))
+    }
+
     /// The gain last written to the servos, or `None` before the first write. This is what
     /// the robot is running at, which is not always what the caller asked for.
     pub fn gain(&self) -> Option<u16> {
@@ -388,6 +407,23 @@ mod tests {
             FakeImu::new(),
             SafetyConfig::default(),
         )
+    }
+
+    #[test]
+    fn an_isolated_mouth_command_does_not_touch_the_other_joints() {
+        let mut safety = safety();
+        let mouth = crate::model::MOUTH_INDEX;
+        safety.set_joint_torque(mouth, true).unwrap();
+        safety.write_joint(mouth, 0.25).unwrap();
+
+        assert_eq!(safety.io().last_joint_torque, Some((mouth, true)));
+        assert_eq!(safety.io().last_joint_written, Some((mouth, 0.25)));
+        assert_eq!(safety.io().writes, 0, "the full 15-joint path must stay idle");
+        assert_eq!(
+            safety.io().torque_writes,
+            0,
+            "full-body torque must stay idle"
+        );
     }
 
     /// A hard footfall spikes gravity briefly. Treating that as a fall would drop the robot

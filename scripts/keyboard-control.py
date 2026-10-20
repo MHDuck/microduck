@@ -3,22 +3,164 @@ import argparse
 from contextlib import suppress
 import csv
 from datetime import datetime
+import importlib.util
 import json
 import math
 import os
 from pathlib import Path
+import random
 import select
 import signal
 import socket
 import subprocess
 import sys
-import termios
+import threading
 import time
-import tty
+
+try:
+    import termios
+    import tty
+except ImportError:  # Unit-testable on Windows; the interactive program remains Linux-only.
+    termios = None
+    tty = None
 
 
 # Same order as duck_control::model::JOINT_IDS.
 JOINT_IDS = (20, 21, 22, 23, 24, 30, 31, 32, 33, 34, 10, 11, 12, 13, 14)
+
+
+class VoiceInterrupted(RuntimeError):
+    """The robot stopped walking while a mouth animation was in progress."""
+
+
+def load_voice_module():
+    script = Path(__file__).with_name("duck-voice.py")
+    spec = importlib.util.spec_from_file_location("duck_voice_runtime", script)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载语音脚本：{script}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def is_walking(enabled, velocity):
+    return enabled and any(abs(component) > 1e-3 for component in velocity)
+
+
+def choose_emotion(emotions, previous, rng):
+    choices = [name for name in emotions if name != previous] or list(emotions)
+    return rng.choice(choices)
+
+
+class WalkingVoice:
+    """Play varied voice cues on a second robotd connection while movement is commanded."""
+
+    def __init__(
+        self,
+        socket_path,
+        emotions,
+        gap_min,
+        gap_max,
+        *,
+        enabled=False,
+        sound_only=False,
+        voice_module=None,
+        rng=None,
+    ):
+        self.voice = voice_module or load_voice_module()
+        unknown = sorted(set(emotions) - set(self.voice.EMOTIONS))
+        if unknown:
+            raise ValueError(f"未知语音情绪：{', '.join(unknown)}")
+        self.socket_path = Path(socket_path)
+        self.emotions = tuple(emotions)
+        self.gap_min = gap_min
+        self.gap_max = gap_max
+        self.sound_only = sound_only
+        self.rng = rng or random.Random()
+        self._condition = threading.Condition()
+        self._enabled = enabled
+        self._moving = False
+        self._stopped = False
+        self._last_emotion = None
+        self._status = "语音开启" if enabled else "语音关闭"
+        self._thread = threading.Thread(target=self._run, name="walking-voice", daemon=True)
+        self._thread.start()
+
+    @property
+    def enabled(self):
+        with self._condition:
+            return self._enabled
+
+    @property
+    def status(self):
+        with self._condition:
+            return self._status
+
+    def toggle(self):
+        with self._condition:
+            self._enabled = not self._enabled
+            self._status = "语音开启" if self._enabled else "语音关闭"
+            self._condition.notify_all()
+            return self._enabled
+
+    def set_moving(self, moving):
+        with self._condition:
+            if self._moving != moving:
+                self._moving = moving
+                self._condition.notify_all()
+
+    def _active(self):
+        return self._enabled and self._moving and not self._stopped
+
+    def _sleep_while_active(self, seconds):
+        with self._condition:
+            interrupted = self._condition.wait_for(
+                lambda: not self._active(), timeout=max(0.0, seconds)
+            )
+            if interrupted:
+                raise VoiceInterrupted
+
+    def _run(self):
+        while True:
+            with self._condition:
+                self._condition.wait_for(lambda: self._stopped or self._active())
+                if self._stopped:
+                    return
+            emotion = choose_emotion(self.emotions, self._last_emotion, self.rng)
+            self._last_emotion = emotion
+            cue = self.voice.EMOTIONS[emotion]
+            try:
+                with self.voice.RobotdClient(self.socket_path) as client:
+                    client.hello()
+                    self.voice.play_cue(
+                        client,
+                        cue,
+                        with_mouth=not self.sound_only,
+                        rate_hz=self.voice.DEFAULT_RATE_HZ,
+                        mouth_scale=0.85,
+                        sleep_fn=self._sleep_while_active,
+                    )
+                    if self.sound_only:
+                        self._sleep_while_active(cue.duration_s)
+                with self._condition:
+                    self._status = f"刚播放 {emotion}"
+                self._sleep_while_active(self.rng.uniform(self.gap_min, self.gap_max))
+            except VoiceInterrupted:
+                continue
+            except Exception as error:
+                with self._condition:
+                    self._status = f"语音错误: {error}"
+                try:
+                    self._sleep_while_active(1.0)
+                except VoiceInterrupted:
+                    pass
+
+    def close(self):
+        with self._condition:
+            self._stopped = True
+            self._condition.notify_all()
+        self._thread.join(timeout=3.0)
 
 
 def main():
@@ -26,9 +168,35 @@ def main():
     parser.add_argument("--socket", default="/run/robotd.sock",
                         help="自定义 socket 退出时只请求卸力；默认 socket 退出时停止 robotd 服务。")
     parser.add_argument("--log-dir", default="logs", help="电流 CSV 日志目录，默认当前目录下的 logs。")
+    parser.add_argument("--walk-voice", action="store_true",
+                        help="启动时开启行走随机发声；运行中按 V 可随时切换。")
+    parser.add_argument("--voice-emotions", default="happy,greeting,curious,sad,goodbye",
+                        help="随机情绪列表，逗号分隔；默认不使用 alarm。")
+    parser.add_argument("--voice-gap-min", type=float, default=0.25,
+                        help="两段声音的最短间隔秒数，默认 0.25。")
+    parser.add_argument("--voice-gap-max", type=float, default=0.80,
+                        help="两段声音的最长间隔秒数，默认 0.80。")
+    parser.add_argument("--voice-sound-only", action="store_true",
+                        help="随机讲话只发声，不控制嘴部。")
     args = parser.parse_args()
+    if termios is None or tty is None:
+        parser.error("keyboard-control.py 只能在 Linux/WSL/板端终端运行")
     if not sys.stdin.isatty():
         parser.error("需要交互终端；SSH 登录后运行这个文件。")
+    if args.voice_gap_min < 0 or args.voice_gap_max < args.voice_gap_min:
+        parser.error("语音间隔必须满足 0 <= --voice-gap-min <= --voice-gap-max")
+    emotions = tuple(name.strip() for name in args.voice_emotions.split(",") if name.strip())
+    if not emotions:
+        parser.error("--voice-emotions 至少需要一个情绪")
+
+    walking_voice = WalkingVoice(
+        args.socket,
+        emotions,
+        args.voice_gap_min,
+        args.voice_gap_max,
+        enabled=args.walk_voice,
+        sound_only=args.voice_sound_only,
+    )
 
     moves = {
         "a": (0.05, 0.0), "d": (-0.05, 0.0),
@@ -72,6 +240,7 @@ def main():
             print("T 坐下/站起切换（Enter 启用后使用，切换前速度归零；两次点按请间隔 1 秒以上）。")
             print("实时显示指令速度；vx 持续保持，按空格停止。")
             print("C 开始/停止实际策略、电流显示和 CSV 记录（可在启用模型之前开始）。")
+            print("V 开启/关闭行走随机讲话；只在速度指令非零时发声，停止后立即闭嘴。")
             print("退出会卸力，请先托住机器人；默认连接还会停止 robotd 服务。")
             terminal = sys.stdin.fileno()
             saved = termios.tcgetattr(terminal)
@@ -163,6 +332,9 @@ def main():
                                     missing_ticks = 0
                                     current_status = "等待实时电流……"
                                     print(f"\r\033[K电流记录开始：{log_path}（每拍保存，C 停止）", flush=True)
+                            elif key == "v":
+                                on = walking_voice.toggle()
+                                print(f"\r\033[K行走随机讲话已{'开启' if on else '关闭'}。", flush=True)
                             elif key in ("w", "s") and enabled:
                                 vx = round(velocity[0] + (0.10 if key == "w" else -0.10), 2)
                                 velocity = (max(-0.40, min(0.40, vx)), velocity[1], velocity[2])
@@ -223,6 +395,7 @@ def main():
                         velocity = (velocity[0], 0.0, 0.0)
                     if enabled:
                         send("robot.move", dict(zip(("vx", "vy", "vyaw"), velocity)))
+                    walking_voice.set_moving(is_walking(enabled, velocity))
                     vx, vy, vyaw = velocity
                     status = "已请求启用" if enabled else "待 Enter 启用"
                     now = time.monotonic()
@@ -232,9 +405,10 @@ def main():
                         if current_socket is not None:
                             print(f"\r\033[K{current_status}", flush=True)
                         print(f"\r\033[K{status} | 指令 vx={vx:+.2f} m/s  vy={vy:+.2f} m/s  "
-                              f"vyaw={vyaw:+.2f} rad/s", end="", flush=True)
+                              f"vyaw={vyaw:+.2f} rad/s | {walking_voice.status}", end="", flush=True)
                         next_display = now + 0.2
             finally:
+                walking_voice.close()
                 for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                     signal.signal(signum, signal.SIG_IGN)
                 with suppress(termios.error):
