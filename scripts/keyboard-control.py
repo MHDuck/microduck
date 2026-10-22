@@ -36,6 +36,18 @@ def main():
     turns = {
         "q": 0.30, "e": -0.30,
     }
+    skills = {"g": "ground_pick", "z": "kick_left", "v": "kick_right", "x": "roulade"}
+    head_keys = {
+        "w": ("head_pitch", -0.10), "s": ("head_pitch", 0.10),
+        "a": ("head_yaw", 0.10), "d": ("head_yaw", -0.10),
+        "i": ("neck_pitch", 0.10), "k": ("neck_pitch", -0.10),
+        "j": ("head_roll", -0.10), "l": ("head_roll", 0.10),
+    }
+    pose_keys = {
+        "w": ("z", 0.001, -0.025, 0.010), "s": ("z", -0.001, -0.025, 0.010),
+        "i": ("pitch", 0.02, -0.2618, 0.2618), "k": ("pitch", -0.02, -0.2618, 0.2618),
+        "j": ("roll", -0.02, -0.2618, 0.2618), "l": ("roll", 0.02, -0.2618, 0.2618),
+    }
     with socket.socket(socket.AF_UNIX) as connection:
         connection.settimeout(1.0)
         try:
@@ -51,7 +63,7 @@ def main():
                     message["id"] = ident
                 connection.sendall((json.dumps(message) + "\n").encode())
 
-            def call(method, params):
+            def call(method, params, *, allow_refusal=False):
                 nonlocal request_id
                 request_id += 1
                 send(method, params, request_id)
@@ -63,12 +75,15 @@ def main():
                     raise RuntimeError(f"robotd 返回异常：{response}")
                 result = response.get("result", {})
                 if result.get("accepted") is False:
+                    if allow_refusal:
+                        print(f"\r\033[K{method} 被拒绝：{result.get('reason', '未知原因')}", flush=True)
+                        return None
                     raise RuntimeError(result.get("reason", "robotd 拒绝了指令"))
                 return result
 
             call("hello", {"api_version": 17})
             call("robot.stop", {})
-            print("托住机器人，按 Enter 启用模型。")
+            print("托住机器人，Enter = 手柄 Start：开启/关闭策略；关闭策略不卸力。")
             print("W/S 每次增减 vx 0.10 m/s（范围 -0.40～+0.40），松开保持；长按会连续调速。")
             print("A/D 每次增减 vy 0.10 m/s（范围 -0.40～+0.40），松开保持；长按会连续调速。")
             print("Q/E 左右转（松开约 0.3 秒停止转向）  空格速度归零  Esc/Ctrl-C 退出")
@@ -76,13 +91,28 @@ def main():
             print("每次 T 后打印 5 秒关节位置（5 Hz，14 个关节，实测 / HOME / 偏差，单位 rad）。")
             print("实时显示指令速度；vx / vy 持续保持，按空格停止。")
             print("C 开始/停止实际策略、电流显示和 CSV 记录（可在启用模型之前开始）。")
+            print("Y 头部模式 / B 身体姿态模式，再按返回行走；切换时速度归零。")
+            print("头部：W/S 俯仰、A/D 偏航、I/K 颈部俯仰、J/L 侧倾；身体：W/S 高度、I/K 俯仰、J/L 侧倾。")
+            print("姿态按键逐次调整，松开保持；空格同时将当前姿态归零。")
+            print("G = A 拾取  Z/V = LB/RB 踢腿  X 翻滚（长按连续）  R/F = RT/LT 张嘴与声音。")
+            print("M 长按 3 秒切换步行/轮式  P 长按 2 秒坐下并关机；单次按住只触发一次。")
+            print("终端以按键重复估算长按和松开；R/F/X 松开约 0.3 秒释放，开关类按键两次点按请间隔 1 秒以上。")
             print("退出会卸力，请先托住机器人；默认连接还会停止 robotd 服务。")
             terminal = sys.stdin.fileno()
             saved = termios.tcgetattr(terminal)
             enabled = False
+            mode = "drive"
+            head = dict.fromkeys(("neck_pitch", "head_pitch", "head_yaw", "head_roll"), 0.0)
+            pose = dict.fromkeys(("z", "pitch", "roll"), 0.0)
+            last_keys = {}
+            held_since = {}
+            hold_sent = set()
+            roll_until = rt_until = lt_until = 0.0
+            roll_accepted = False
+            wheee_active = False
+            shutdown_requested = False
             velocity = (0.0, 0.0, 0.0)
             expires = 0.0
-            last_sit_key = 0.0
             position_socket = None
             position_buffer = b""
             position_until = 0.0
@@ -110,21 +140,82 @@ def main():
                         if not keys:
                             break
                         for key in keys.decode(errors="ignore").lower():
+                            if key == "\r":
+                                key = "\n"
+                            now = time.monotonic()
+                            # shortcut: terminals have no key-up events; allow the initial repeat delay.
+                            pressed = now - last_keys.get(key, -math.inf) > 1.0
+                            last_keys[key] = now
                             if key in ("\x1b", "\x03"):
                                 return 0
-                            if key in ("\r", "\n"):
+                            if key == "\n" and pressed:
                                 velocity = (0.0, 0.0, 0.0)
                                 expires = 0.0
+                                roll_until = 0.0
                                 call("robot.stop", {})
-                                call("robot.enable", {"on": True, "toggle": False})
-                                enabled = True
+                                result = call("robot.enable", {"on": False, "toggle": True}, allow_refusal=True)
+                                if result is not None:
+                                    enabled = result["reason"].startswith("enabled")
+                                    print(f"\r\033[K{result['reason']}", flush=True)
                             elif key == " ":
                                 velocity = (0.0, 0.0, 0.0)
                                 expires = 0.0
+                                roll_until = rt_until = lt_until = 0.0
+                                head = dict.fromkeys(head, 0.0)
+                                pose = dict.fromkeys(pose, 0.0)
                                 call("robot.stop", {})
+                                send("robot.head", head)
+                                send("robot.pose", {**pose, "active": mode == "body"})
+                            elif key in ("y", "b") and pressed:
+                                target = "head" if key == "y" else "body"
+                                if mode == "body":
+                                    send("robot.pose", {"active": False})
+                                mode = "drive" if mode == target else target
+                                velocity = (0.0, 0.0, 0.0)
+                                expires = 0.0
+                                pose = dict.fromkeys(pose, 0.0)
+                                call("robot.stop", {})
+                            elif key in skills and enabled:
+                                if pressed:
+                                    result = call("robot.do", {"skill": skills[key]}, allow_refusal=True)
+                                    if key == "x":
+                                        roll_accepted = result is not None
+                                if key == "x" and roll_accepted:
+                                    roll_until = now + 0.30
+                            elif key in ("r", "f"):
+                                if key == "r":
+                                    rt_until = now + 0.30
+                                    if pressed:
+                                        call("robot.sound", {"tag": "chirp"}, allow_refusal=True)
+                                else:
+                                    lt_until = now + 0.30
+                                    if pressed:
+                                        call("robot.sound", {"tag": "wheee", "hold": True}, allow_refusal=True)
+                            elif key in ("m", "p"):
+                                if pressed:
+                                    held_since[key] = now
+                                    hold_sent.discard(key)
+                                if key not in hold_sent and now - held_since[key] >= (3.0 if key == "m" else 2.0):
+                                    hold_sent.add(key)
+                                    velocity = (0.0, 0.0, 0.0)
+                                    expires = 0.0
+                                    roll_until = rt_until = lt_until = 0.0
+                                    call("robot.stop", {})
+                                    if key == "m":
+                                        current_mode = call("robot.mode", {})["mode"]
+                                        target = "roller" if current_mode == "walk" else "walk"
+                                        if call("robot.setMode", {"mode": target}, allow_refusal=True) is not None:
+                                            print(f"\r\033[K已请求切换到 {target}。", flush=True)
+                                    else:
+                                        send("robot.pose", {"active": False})
+                                        send("robot.mouth", {"open": 0.0})
+                                        send("robot.sound", {"tag": "wheee", "hold": False})
+                                        if call("robot.shutdown", {}, allow_refusal=True) is not None:
+                                            shutdown_requested = True
+                                            print("\r\033[K已请求坐下并关机，由 robotd 完成。", flush=True)
+                                            return 0
                             elif key == "t" and enabled:
-                                now = time.monotonic()
-                                if now - last_sit_key > 1.0:
+                                if pressed:
                                     velocity = (0.0, 0.0, 0.0)
                                     expires = 0.0
                                     call("robot.stop", {})
@@ -151,8 +242,7 @@ def main():
                                         position_socket.setblocking(False)
                                         position_buffer = b""
                                         print("\r\033[K坐站请求已入队；开始打印 5 秒位置，偏差 = 实测 - HOME（rad）。", flush=True)
-                                last_sit_key = now
-                            elif key == "c":
+                            elif key == "c" and pressed:
                                 if current_socket is not None:
                                     current_socket.close()
                                     current_socket = None
@@ -191,13 +281,19 @@ def main():
                                     missing_ticks = 0
                                     current_status = "等待实时电流……"
                                     print(f"\r\033[K电流记录开始：{log_path}（每拍保存，C 停止）", flush=True)
-                            elif key in ("w", "s") and enabled:
+                            elif mode == "head" and key in head_keys and enabled:
+                                field, step = head_keys[key]
+                                head[field] = max(-2.5, min(2.5, round(head[field] + step, 4)))
+                            elif mode == "body" and key in pose_keys and enabled:
+                                field, step, low, high = pose_keys[key]
+                                pose[field] = max(low, min(high, round(pose[field] + step, 4)))
+                            elif mode == "drive" and key in ("w", "s") and enabled:
                                 vx = round(velocity[0] + (0.10 if key == "w" else -0.10), 2)
                                 velocity = (max(-0.40, min(0.40, vx)), velocity[1], velocity[2])
-                            elif key in ("a", "d") and enabled:
+                            elif mode == "drive" and key in ("a", "d") and enabled:
                                 vy = round(velocity[1] + (0.10 if key == "a" else -0.10), 2)
                                 velocity = (velocity[0], max(-0.40, min(0.40, vy)), velocity[2])
-                            elif key in turns and enabled:
+                            elif mode == "drive" and key in turns and enabled:
                                 velocity = (velocity[0], velocity[1], turns[key])
                                 # shortcut: terminal repeats replace key-up events; use evdev for exact release timing.
                                 expires = time.monotonic() + 0.30
@@ -288,8 +384,25 @@ def main():
                         velocity = (velocity[0], velocity[1], 0.0)
                     if enabled:
                         send("robot.move", dict(zip(("vx", "vy", "vyaw"), velocity)))
+                        if mode == "head":
+                            send("robot.head", head)
+                        elif mode == "body":
+                            send("robot.pose", {**pose, "active": True})
+                        if time.monotonic() < roll_until:
+                            send("robot.do", {"skill": "roulade"})
+                    now = time.monotonic()
+                    send("robot.mouth", {"open": float(now < max(rt_until, lt_until))})
+                    if now < lt_until:
+                        send("robot.sound", {"tag": "wheee", "hold": True})
+                    elif wheee_active:
+                        send("robot.sound", {"tag": "wheee", "hold": False})
+                    wheee_active = now < lt_until
                     vx, vy, vyaw = velocity
-                    status = "已请求启用" if enabled else "待 Enter 启用"
+                    status = "已启用，Enter 停用" if enabled else "已停用，Enter 启用"
+                    status += " | " + {"drive": "行走", "head": "头部", "body": "身体姿态"}[mode]
+                    if mode != "drive":
+                        status += " " + " ".join(f"{key}={value:+.3f}" for key, value in
+                                                 (head if mode == "head" else pose).items())
                     now = time.monotonic()
                     if current_socket is not None and now - current_received > 0.5:
                         current_status = "电流数据已过期，等待新数据……"
@@ -313,18 +426,24 @@ def main():
                         current_log.close()
                         print(f"\r\033[K电流记录已保存：{log_path}；采样峰值 {current_peak:.3f} A，"
                               f"缺失拍数 {missing_ticks}", flush=True)
-                with suppress(OSError):
-                    print("\r\033[K正在停止控制并卸力……", flush=True)
-                with suppress(OSError, ValueError, RuntimeError):
-                    call("robot.stop", {})
-                if args.socket == "/run/robotd.sock":
+                if not shutdown_requested:
                     with suppress(OSError, ValueError, RuntimeError):
+                        send("robot.pose", {"active": False})
+                        send("robot.head", dict.fromkeys(head, 0.0))
+                        send("robot.mouth", {"open": 0.0})
+                        send("robot.sound", {"tag": "wheee", "hold": False})
+                    with suppress(OSError):
+                        print("\r\033[K正在停止控制并卸力……", flush=True)
+                    with suppress(OSError, ValueError, RuntimeError):
+                        call("robot.stop", {})
+                    if args.socket == "/run/robotd.sock":
+                        with suppress(OSError, ValueError, RuntimeError):
+                            call("robot.relax", {})
+                        subprocess.run(["systemctl", "stop", "robotd"], check=True, timeout=15)
+                        print("robotd 服务已停止。再次使用前运行：sudo systemctl start robotd")
+                    else:
                         call("robot.relax", {})
-                    subprocess.run(["systemctl", "stop", "robotd"], check=True, timeout=15)
-                    print("robotd 服务已停止。再次使用前运行：sudo systemctl start robotd")
-                else:
-                    call("robot.relax", {})
-                    print("已发送卸力请求。")
+                        print("已发送卸力请求。")
     return 0
 
 

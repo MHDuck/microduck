@@ -218,7 +218,8 @@ sudo systemctl start robotd
 sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py
 ```
 
-Support the robot before pressing Enter to enable the policy. Each W/S key increases/decreases
+Support the robot before pressing Enter: like gamepad Start, it toggles the daemon's actual policy
+state. Disabling returns to the home pose without cutting torque. Each W/S key increases/decreases
 `vx` by 0.10 m/s, clamped to -0.40..+0.40 m/s; releasing the key keeps this speed.
 A/D increases/decreases lateral `vy` with the same step, limits, and persistence as W/S.
 Holding W/S or A/D keeps adjusting via terminal repeat; Space zeroes all velocities.
@@ -233,6 +234,29 @@ gamepad from overwriting keyboard commands; to return to the gamepad:
 ```
 sudo systemctl start robotd padd
 ```
+
+The other gamepad actions are available from the keyboard too:
+
+| key | gamepad equivalent / action |
+| --- | --- |
+| T | D-pad down: sit / stand; prints joint positions for five seconds afterwards |
+| Y / B | head / body-pose mode; press the same key again to return to driving |
+| G | A: ground pick (A remains a direction key) |
+| Z / V | LB / RB: left / right kick |
+| X | forward roll; hold to chain rolls |
+| R / F | RT / LT: mouth plus quack / held wheee sound |
+| M, held 3 s | D-pad up: switch walk / roller mode, keeping the keyboard's velocity steps |
+| P, held 2 s | Select: request sit and power-off; the script exits without interrupting robotd's shutdown |
+
+Head mode uses W/S for head pitch, A/D for head yaw, I/K for neck pitch and J/L for head roll
+(0.10 rad steps, ±2.5 rad). Body mode uses W/S for height (0.001 m steps, −0.025..+0.010 m),
+I/K for pitch and J/L for roll (0.02 rad steps, ±0.2618 rad). Both modes zero driving velocity;
+pose targets persist after release. Space zeroes velocity and pose targets and releases mouth,
+sound and roll inputs. Missing action models are reported without exiting the keyboard session.
+
+Terminals provide repeats rather than key-up events: R/F/X release after about 0.3 s without input.
+Leave over one second between separate presses of Enter, Y/B, T, G, Z/V or C; holding these does
+not repeatedly toggle or trigger them. M/P trigger once per hold. Drive-mode WASD/QE behavior is unchanged.
 
 Press **C** to toggle live current display and CSV logging, including before enabling the policy.
 The display refreshes at 5 Hz; the log captures every received control tick (normally about 50 Hz),
