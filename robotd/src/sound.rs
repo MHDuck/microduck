@@ -400,7 +400,7 @@ impl Sound {
                     stream.block(&mut block);
                     bytes.clear();
                     for sample in &block {
-                        let scaled = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                        let scaled = sounds::synth::to_i16_sample(*sample);
                         bytes.extend_from_slice(&scaled.to_le_bytes());
                     }
 
@@ -522,7 +522,7 @@ impl Sound {
                     voice.block(&mut block);
                     bytes.clear();
                     for sample in &block {
-                        let scaled = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                        let scaled = sounds::synth::to_i16_sample(*sample);
                         bytes.extend_from_slice(&scaled.to_le_bytes());
                     }
                     let ahead = sent as f64 / bytes_per_sec - t0.elapsed().as_secs_f64();

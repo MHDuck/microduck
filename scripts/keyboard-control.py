@@ -33,9 +33,8 @@ def main():
     if not sys.stdin.isatty():
         parser.error("需要交互终端；SSH 登录后运行这个文件。")
 
-    moves = {
-        "a": (0.05, 0.0), "d": (-0.05, 0.0),
-        "q": (0.0, 0.30), "e": (0.0, -0.30),
+    turns = {
+        "q": 0.30, "e": -0.30,
     }
     with socket.socket(socket.AF_UNIX) as connection:
         connection.settimeout(1.0)
@@ -71,10 +70,11 @@ def main():
             call("robot.stop", {})
             print("托住机器人，按 Enter 启用模型。")
             print("W/S 每次增减 vx 0.10 m/s（范围 -0.40～+0.40），松开保持；长按会连续调速。")
-            print("A/D 左右横移  Q/E 左右转（松开约 0.3 秒停止横移/转向）  空格速度归零  Esc/Ctrl-C 退出")
+            print("A/D 每次增减 vy 0.10 m/s（范围 -0.40～+0.40），松开保持；长按会连续调速。")
+            print("Q/E 左右转（松开约 0.3 秒停止转向）  空格速度归零  Esc/Ctrl-C 退出")
             print("T 坐下/站起切换（Enter 启用后使用，切换前速度归零；两次点按请间隔 1 秒以上）。")
             print("每次 T 后打印 5 秒关节位置（5 Hz，14 个关节，实测 / HOME / 偏差，单位 rad）。")
-            print("实时显示指令速度；vx 持续保持，按空格停止。")
+            print("实时显示指令速度；vx / vy 持续保持，按空格停止。")
             print("C 开始/停止实际策略、电流显示和 CSV 记录（可在启用模型之前开始）。")
             print("退出会卸力，请先托住机器人；默认连接还会停止 robotd 服务。")
             terminal = sys.stdin.fileno()
@@ -194,8 +194,11 @@ def main():
                             elif key in ("w", "s") and enabled:
                                 vx = round(velocity[0] + (0.10 if key == "w" else -0.10), 2)
                                 velocity = (max(-0.40, min(0.40, vx)), velocity[1], velocity[2])
-                            elif key in moves and enabled:
-                                velocity = (velocity[0], *moves[key])
+                            elif key in ("a", "d") and enabled:
+                                vy = round(velocity[1] + (0.10 if key == "a" else -0.10), 2)
+                                velocity = (velocity[0], max(-0.40, min(0.40, vy)), velocity[2])
+                            elif key in turns and enabled:
+                                velocity = (velocity[0], velocity[1], turns[key])
                                 # shortcut: terminal repeats replace key-up events; use evdev for exact release timing.
                                 expires = time.monotonic() + 0.30
                     if position_socket is not None and position_socket in readable:
@@ -282,7 +285,7 @@ def main():
                                 sample.get("input_abs_a", "") if valid else "",
                             ])
                     if time.monotonic() >= expires:
-                        velocity = (velocity[0], 0.0, 0.0)
+                        velocity = (velocity[0], velocity[1], 0.0)
                     if enabled:
                         send("robot.move", dict(zip(("vx", "vy", "vyaw"), velocity)))
                     vx, vy, vyaw = velocity

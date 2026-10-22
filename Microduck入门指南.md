@@ -25,17 +25,17 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 热点名称（SSID） | `MOHENG`，全部大写 |
-| 热点密码 | `88607979` |
+| 热点名称（SSID） | `duck`，全部小写 |
+| 热点密码 | `1234567890` |
 
 热点名称和密码必须完全一致，不要多输空格。保持热点开启；如果手机有“无人连接时自动关闭热点”设置，首次连接时关闭该选项。
 
-按本次交付配置，Microduck 开机后会尝试自动连接 `MOHENG`。若始终连接不上，可将手机热点切换到 2.4 GHz 或兼容模式后再试。
+按本次交付配置，Microduck 开机后会尝试自动连接 `duck`。若始终连接不上，可将手机热点切换到 2.4 GHz 或兼容模式后再试。
 
 ## 2. 给 Microduck 上电，电脑连接同一个热点
 
 1. 扶稳 Microduck，按交付时说明接好配套电池并上电。
-2. 将电脑的 Wi-Fi 也连接到 `MOHENG`，密码同样是 `88607979`。
+2. 将电脑的 Wi-Fi 也连接到 `duck`，密码同样是 `1234567890`。
 3. 等待约 1 分钟，让机器人完成系统启动和 Wi-Fi 连接。若尚未出现，可以再等 1～2 分钟。
 4. 在手机热点的已连接设备列表中确认电脑和机器人已连接；设备名称可能显示为 `radxa`，也可能只显示 IP 或其他名称。
 
@@ -92,13 +92,13 @@ ssh radxa@192.168.43.120
 
 PuTTY 也可以把 Host Name 改成该实际 IP。本文所有 IP 均为示例，不要直接认定设备使用这个地址。
 
-如果使用实际 IP 仍然超时，确认电脑和机器人都连着 `MOHENG`，并检查热点是否限制设备互访。需要时换一部手机建立同名、同密码热点；不要让两个同名热点同时开启。
+如果使用实际 IP 仍然超时，确认电脑和机器人都连着 `duck`，并检查热点是否限制设备互访。需要时换一部手机建立同名、同密码热点；不要让两个同名热点同时开启。
 
 ## 4. 修改机器人保存的 Wi-Fi（可选）
 
-第一次使用可以跳过本节，保持连接 `MOHENG`，直接进入第 5 节。
+第一次使用可以跳过本节，保持连接 `duck`，直接进入第 5 节。
 
-本节修改的是**机器人连接哪个 Wi-Fi**。更换后，电脑也要连接新的 Wi-Fi，才能继续 SSH 控制。不要先修改手机上现有 `MOHENG` 热点的名称或密码，否则可能先失去机器人连接。
+本节修改的是**机器人连接哪个 Wi-Fi**。更换后，电脑也要连接新的 Wi-Fi，才能继续 SSH 控制。不要先修改手机上现有 `duck` 热点的名称或密码，否则可能先失去机器人连接。
 
 Armbian 从 24.05 起使用 Netplan 描述网络配置；官方 Minimal 镜像通常使用 `systemd-networkd`，CLI/桌面镜像通常使用 NetworkManager。本项目的部署流程还可能迁移网络后端，因此应以设备实际状态为准。[Armbian 官方网络说明](https://docs.armbian.com/user-guide/networking/)
 
@@ -122,7 +122,7 @@ NetworkManager 管理 Wi-Fi 时的**示例输出**：
 
 ```text
 DEVICE  TYPE      STATE      CONNECTION
-wlan0   wifi      connected  MOHENG
+wlan0   wifi      connected  duck
 lo      loopback  connected  lo
 ```
 
@@ -134,7 +134,7 @@ lo      loopback  connected  lo
 systemctl is-active systemd-networkd
 ```
 
-如果输出 `active`，按 **4.3** 操作。两个服务可能同时运行，不要仅凭服务是否启动就判断谁管理 Wi-Fi；如无法判断，保留 `MOHENG`，把这些命令的实际输出交给售后确认。
+如果输出 `active`，按 **4.3** 操作。两个服务可能同时运行，不要仅凭服务是否启动就判断谁管理 Wi-Fi；如无法判断，保留 `duck`，把这些命令的实际输出交给售后确认。
 
 ### 4.2 NetworkManager：用命令连接新 Wi-Fi
 
@@ -150,7 +150,7 @@ sudo nmcli device wifi list ifname wlan0
 
 ```text
 IN-USE  SSID          SIGNAL  SECURITY
-*       MOHENG        85      WPA2
+*       duck          85      WPA2
         CustomerWiFi  78      WPA2
 ```
 
@@ -181,7 +181,7 @@ ssh radxa@radxa.local
 sudo nmcli connection modify "microduck-client-wifi" connection.autoconnect yes connection.autoconnect-priority 100
 ```
 
-该命令通常没有输出。优先级用于自动选择连接，不会立即切换当前网络。保留原有 `MOHENG` 配置，暂时不要删除，便于现场恢复连接。
+该命令通常没有输出。优先级用于自动选择连接，不会立即切换当前网络。保留原有 `duck` 配置，暂时不要删除，便于现场恢复连接。
 
 如果偏好菜单操作，在确认 Wi-Fi 由 NetworkManager 管理后，也可以用 `sudo nmtui`，进入 **Activate a connection（激活连接）**，选择新 Wi-Fi 并输入密码。网络切换后同样需要重新连接 SSH。
 
@@ -213,7 +213,7 @@ sudo armbian-config --cmd BNS001
 
 如果已安装的旧版工具不支持 `--cmd BNS001`，运行 `sudo armbian-config`，在 **Network（网络）** 中寻找 Wi-Fi 设置。若提示 `armbian-config: command not found` 或菜单无法使用，先保留默认热点，将报错交给售后；不要为完成首次体验自行更换网络后端或覆盖整套 Netplan 配置。
 
-应用时 SSH 可能断开。将电脑连到新 Wi-Fi，再按第 3 节重新登录。若始终无法连接，在新路由器和原热点的设备列表中分别查找机器人；不要假定更改失败后必定自动回到 `MOHENG`。
+应用时 SSH 可能断开。将电脑连到新 Wi-Fi，再按第 3 节重新登录。若始终无法连接，在新路由器和原热点的设备列表中分别查找机器人；不要假定更改失败后必定自动回到 `duck`。
 
 ### 4.4 确认新网络可用
 
@@ -316,12 +316,12 @@ T 需要在 Enter 启用后使用。程序也会在发送坐站请求前把速�
 
 | 按键 | 作用 |
 | --- | --- |
-| `A` / `D` | 左右横移 |
+| `A` / `D` | 增减横移速度 `vy`，每次 0.10 m/s，范围 -0.40～+0.40 m/s，松开保持 |
 | `Q` / `E` | 左右转向 |
 | `C` | 开始 / 停止策略、电流显示和 CSV 记录；首次体验可忽略 |
 | `Esc` / `Ctrl+C` | 退出控制，执行卸力；默认连接下同时停止 robotd 服务 |
 
-横移和转向松开后约 0.3 秒归零，**不会清除已经设置的前后速度 `vx`**。初次体验建议先只使用 Enter、W、S、空格、T 和 Esc。
+横移速度 `vy` 与前后速度 `vx` 一样，松开保持，长按连续调速，按空格归零。转向松开后约 0.3 秒归零，**不会清除已经设置的 `vx` 和 `vy`**。初次体验建议先只使用 Enter、W、S、空格、T 和 Esc。
 
 ## 6. 退出、再次启动与关机
 
@@ -411,7 +411,7 @@ systemctl is-active systemd-networkd
 
 ## 8. 完整操作示例：命令与回复
 
-以下假设电脑和机器人已连接 `MOHENG`、已接受过 SSH 主机密钥、服务启动正常，展示从登录到退出的过程。**全部为示例交互，不是设备实测；`[操作：…]` 是人工按键说明，不能输入或粘贴到终端。**
+以下假设电脑和机器人已连接 `duck`、已接受过 SSH 主机密钥、服务启动正常，展示从登录到退出的过程。**全部为示例交互，不是设备实测；`[操作：…]` 是人工按键说明，不能输入或粘贴到终端。**
 
 ```text
 PS C:\Users\Customer> ssh radxa@radxa.local
@@ -432,10 +432,11 @@ active
 radxa@radxa:~$ sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py
 托住机器人，按 Enter 启用模型。
 W/S 每次增减 vx 0.10 m/s（范围 -0.40～+0.40），松开保持；长按会连续调速。
-A/D 左右横移  Q/E 左右转（松开约 0.3 秒停止横移/转向）  空格速度归零  Esc/Ctrl-C 退出
+A/D 每次增减 vy 0.10 m/s（范围 -0.40～+0.40），松开保持；长按会连续调速。
+Q/E 左右转（松开约 0.3 秒停止转向）  空格速度归零  Esc/Ctrl-C 退出
 T 坐下/站起切换（Enter 启用后使用，切换前速度归零；两次点按请间隔 1 秒以上）。
 每次 T 后打印 5 秒关节位置（5 Hz，14 个关节，实测 / HOME / 偏差，单位 rad）。
-实时显示指令速度；vx 持续保持，按空格停止。
+实时显示指令速度；vx / vy 持续保持，按空格停止。
 C 开始/停止实际策略、电流显示和 CSV 记录（可在启用模型之前开始）。
 退出会卸力，请先托住机器人；默认连接还会停止 robotd 服务。
 待 Enter 启用 | 指令 vx=+0.00 m/s  vy=+0.00 m/s  vyaw=+0.00 rad/s

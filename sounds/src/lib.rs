@@ -40,7 +40,7 @@ pub use synth::SR;
 /// Bump when the synth changes enough that existing banks should re-render on the next
 /// install — the `.seed` marker includes it, so old banks stop matching and regenerate.
 /// v4 was the last Python bank; v5 is the Rust port (new RNG, 48 kHz native).
-pub const BANK_VERSION: u32 = 5;
+pub const BANK_VERSION: u32 = 6;
 
 /// A recipe: personality + variant in, f32 mono at [`SR`] out.
 pub type Recipe = fn(&Personality, u32) -> Vec<f32>;

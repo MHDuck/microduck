@@ -206,10 +206,13 @@ pub fn normalise(x: &mut [f32], peak_dbfs: f64) {
     }
 }
 
+/// Boost quiet audio and soft-limit peaks to 95% of full scale.
+pub fn to_i16_sample(v: f32) -> i16 {
+    ((v * 3.0).tanh() * 0.95 * 32767.0) as i16
+}
+
 pub fn to_i16(x: &[f32]) -> Vec<i16> {
-    x.iter()
-        .map(|&v| (v * 32767.0).clamp(-32768.0, 32767.0) as i16)
-        .collect()
+    x.iter().copied().map(to_i16_sample).collect()
 }
 
 #[cfg(test)]
