@@ -245,6 +245,7 @@ The other gamepad actions are available from the keyboard too:
 | Z / V | LB / RB: left / right kick |
 | X | forward roll; hold to chain rolls |
 | R / F | RT / LT: mouth plus quack / held wheee sound |
+| H | toggle walking voice; automatic voice pauses while R/F is held |
 | M, held 3 s | D-pad up: switch walk / roller mode, keeping the keyboard's velocity steps |
 | P, held 2 s | Select: request sit and power-off; the script exits without interrupting robotd's shutdown |
 
@@ -255,7 +256,7 @@ pose targets persist after release. Space zeroes velocity and pose targets and r
 sound and roll inputs. Missing action models are reported without exiting the keyboard session.
 
 Terminals provide repeats rather than key-up events: R/F/X release after about 0.3 s without input.
-Leave over one second between separate presses of Enter, Y/B, T, G, Z/V or C; holding these does
+Leave over one second between separate presses of Enter, Y/B, T, G, Z/V, H or C; holding these does
 not repeatedly toggle or trigger them. M/P trigger once per hold. Drive-mode WASD/QE behavior is unchanged.
 
 Press **C** to toggle live current display and CSV logging, including before enabling the policy.

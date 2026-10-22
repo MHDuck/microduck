@@ -606,6 +606,26 @@ impl RobotIo for FeetechIo {
             .map_err(|e| IoError::Bus(format!("sync_write WritePosEx: {e}")))
     }
 
+    fn write_joint(&mut self, joint: usize, target: f64) -> Result<()> {
+        let id = *JOINT_IDS
+            .get(joint)
+            .ok_or_else(|| IoError::Bus(format!("joint index {joint} out of range")))?;
+        let data = encode_write_pos_ex(
+            rad_to_position_count(target),
+            WRITE_POS_EX_SPEED,
+            WRITE_POS_EX_ACCEL,
+            WRITE_POS_EX_TORQUE,
+        );
+        self.write_register(id, reg::ACCEL, &data)
+    }
+
+    fn set_joint_torque(&mut self, joint: usize, on: bool) -> Result<()> {
+        let id = *JOINT_IDS
+            .get(joint)
+            .ok_or_else(|| IoError::Bus(format!("joint index {joint} out of range")))?;
+        self.write_register(id, reg::TORQUE_ENABLE, &[if on { 1 } else { 0 }])
+    }
+
     fn set_torque(&mut self, on: bool) -> Result<()> {
         // The inherent method, which is what `robotd init` uses on the way down.
         FeetechIo::set_torque(self, on)

@@ -227,6 +227,7 @@ sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py
 | P 长按 2 秒 | Select 长按 | 请求坐下并关机，退出键盘控制后由 `robotd` 完成关机流程 |
 | 空格 | — | 速度归零、姿态目标归零，并释放嘴部、声音和连续翻滚输入 |
 | C | — | 开始 / 停止电流 CSV 记录 |
+| H | — | 开启 / 关闭行走发声；R/F 手动发声期间暂停自动语音 |
 | Esc / Ctrl-C | — | 退出并卸力；默认连接下还会停止 `robotd`，退出前应托住机器人 |
 
 头部模式：W/S 控制头部俯仰，A/D 控制头部偏航，I/K 控制颈部俯仰，J/L 控制头部侧倾。
@@ -235,9 +236,13 @@ sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py
 姿态按键松开后保持目标，空格归零；这两个模式下机器人不接收行走速度。
 
 终端没有按键松开事件，脚本通过按键重复估算长按；R/F/X 松开约 0.3 秒释放，
-Enter、Y/B、T、G、Z/V、C 两次点按需间隔 1 秒以上，以免长按被当成反复切换。
+Enter、Y/B、T、G、Z/V、C、H 两次点按需间隔 1 秒以上，以免长按被当成反复切换。
 M/P 单次长按只触发一次。动作缺少模型时显示拒绝原因，保留键盘会话。
 先停 `padd` 是为了避免手柄与键盘争抢指令；恢复手柄控制时执行 `sudo systemctl start robotd padd`。
+
+`--walk-voice` 可在启动时开启行走发声，`--voice-sound-only` 关闭自动语音的嘴部动画，
+手动 R/F 仍控制嘴部。独立语音、视觉诊断和 StandUp 测试见
+[本地部署增量](docs/LOCAL_CUSTOMIZATIONS.md)。
 
 ### 网页调试与保护设置
 

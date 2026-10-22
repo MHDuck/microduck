@@ -438,6 +438,9 @@ cargo run -p xtask -- package \
     --include "scripts/rkaiq-modinfo-shim.c=scripts/rkaiq-modinfo-shim.c" \
     --include "scripts/setup-login.sh=scripts/setup-login.sh" \
     --include "scripts/keyboard-control.py=scripts/keyboard-control.py" \
+    --include "scripts/duck-voice.py=scripts/duck-voice.py" \
+    --include "scripts/camera-detect-test.py=scripts/camera-detect-test.py" \
+    --include "scripts/standup-test.py=scripts/standup-test.py" \
     --include "scripts/robot-rescue=scripts/robot-rescue" \
     --include "scripts/robot-boot-check=scripts/robot-boot-check" \
     --include "updater/systemd/robot-boot-check.service=systemd/robot-boot-check.service" \

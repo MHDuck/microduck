@@ -80,6 +80,10 @@ const LOOP_SUMMARY_INTERVAL: Duration = Duration::from_secs(300);
 /// between them on a 20 ms tick twitches rather than sings. This is roughly how fast a jaw moves.
 const CHORALE_MOUTH_TAU_S: f64 = 0.09;
 
+/// Keep an independently animated beak powered long enough to reach its final closed command,
+/// then release that servo. Clients animate at 50 Hz, so a live stream stays well inside this.
+const MOUTH_ONLY_RELEASE: Duration = Duration::from_millis(500);
+
 /// How far a subscriber may fall behind before it starts losing frames.
 ///
 /// Five seconds at 50 Hz. State is advisory: a client that cannot keep up gets a gap, never
@@ -908,6 +912,12 @@ impl RobotIo for SharedDxl {
     fn write(&mut self, targets: &duck_control::JointTargets) -> duck_control::io::Result<()> {
         RobotIo::write(&mut *self.0.borrow_mut(), targets)
     }
+    fn write_joint(&mut self, joint: usize, target: f64) -> duck_control::io::Result<()> {
+        RobotIo::write_joint(&mut *self.0.borrow_mut(), joint, target)
+    }
+    fn set_joint_torque(&mut self, joint: usize, on: bool) -> duck_control::io::Result<()> {
+        RobotIo::set_joint_torque(&mut *self.0.borrow_mut(), joint, on)
+    }
     fn set_gain(&mut self, kp: u16) -> duck_control::io::Result<()> {
         RobotIo::set_gain(&mut *self.0.borrow_mut(), kp)
     }
@@ -950,6 +960,18 @@ impl RobotIo for BusIo {
         match self {
             BusIo::Ft(b) => b.write(targets),
             BusIo::Dxl(b) => b.write(targets),
+        }
+    }
+    fn write_joint(&mut self, joint: usize, target: f64) -> duck_control::io::Result<()> {
+        match self {
+            BusIo::Ft(b) => b.write_joint(joint, target),
+            BusIo::Dxl(b) => b.write_joint(joint, target),
+        }
+    }
+    fn set_joint_torque(&mut self, joint: usize, on: bool) -> duck_control::io::Result<()> {
+        match self {
+            BusIo::Ft(b) => b.set_joint_torque(joint, on),
+            BusIo::Dxl(b) => b.set_joint_torque(joint, on),
         }
     }
     fn set_gain(&mut self, kp: u16) -> duck_control::io::Result<()> {
@@ -1512,6 +1534,10 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
     let mut last_summary = Instant::now();
     let mut was_driving = false;
     let mut bringup = Bringup::Limp;
+    // `robot.mouth` is also valid while the body is limp. No bus write happens until a client
+    // sends a mouth edge, and only the beak servo is powered.
+    let mut last_mouth_generation = 0u64;
+    let mut mouth_only_torqued = false;
     // A mode switch in flight: the mode to end up in, once the robot is home. `None` the rest of
     // the time, which is nearly always.
     let mut mode_change: Option<Mode> = None;
@@ -1734,6 +1760,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
             intents.take_skills();
             intents.take_mode_switch();
             bringup = Bringup::Limp;
+            mouth_only_torqued = false;
             limp_fall = LimpFall::Idle;
             mode_change = None;
             was_driving = false;
@@ -1806,6 +1833,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                     // ends up rather than assuming it is still at the home pose.
                     bringup = Bringup::Limp;
                     was_driving = false;
+                    mouth_only_torqued = false;
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "cannot cut torque; the robot is still powered")
@@ -2543,12 +2571,38 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
             }
         }
 
-        // The mouth is not part of any policy; the intent is the only thing that moves it.
-        // Only while driving — a held or homing robot keeps whatever its hold pose says, so
-        // a restart cannot snap a mouth.
-        if driving && theremin_state.is_none() && chorale_state.is_none() {
-            targets[duck_control::model::MOUTH_INDEX] =
-                duck_control::model::mouth_target(snapshot.mouth);
+        // The mouth is not part of any policy. With the body up it travels in the normal target
+        // set. With the body limp, a fresh edge powers and commands the beak alone: standalone
+        // speech must never enable a walking policy or energise the other fourteen joints.
+        if theremin_state.is_none() && chorale_state.is_none() {
+            let mouth = duck_control::model::mouth_target(snapshot.mouth);
+            if bringup == Bringup::Limp {
+                if snapshot.mouth_generation != last_mouth_generation {
+                    let result = if mouth_only_torqued {
+                        safety.write_joint(duck_control::model::MOUTH_INDEX, mouth)
+                    } else {
+                        safety
+                            .set_joint_torque(duck_control::model::MOUTH_INDEX, true)
+                            .and_then(|_| {
+                                safety.write_joint(duck_control::model::MOUTH_INDEX, mouth)
+                            })
+                    };
+                    match result {
+                        Ok(()) => mouth_only_torqued = true,
+                        Err(e) => tracing::warn!(error = %e, "isolated mouth write failed"),
+                    }
+                    last_mouth_generation = snapshot.mouth_generation;
+                } else if mouth_only_torqued && snapshot.mouth_age >= MOUTH_ONLY_RELEASE {
+                    match safety.set_joint_torque(duck_control::model::MOUTH_INDEX, false) {
+                        Ok(()) => mouth_only_torqued = false,
+                        Err(e) => tracing::warn!(error = %e, "cannot release isolated mouth"),
+                    }
+                }
+            } else {
+                targets[duck_control::model::MOUTH_INDEX] = mouth;
+                last_mouth_generation = snapshot.mouth_generation;
+                mouth_only_torqued = false;
+            }
         }
 
         // HD1910 WritePosEx arms the servo (goal torque 980). A limp robot — `--no-policy`,
@@ -4862,6 +4916,16 @@ mod tests {
             fn write(&mut self, t: &duck_control::JointTargets) -> duck_control::io::Result<()> {
                 self.0.write(t)
             }
+            fn write_joint(&mut self, joint: usize, target: f64) -> duck_control::io::Result<()> {
+                self.0.write_joint(joint, target)
+            }
+            fn set_joint_torque(
+                &mut self,
+                joint: usize,
+                on: bool,
+            ) -> duck_control::io::Result<()> {
+                self.0.set_joint_torque(joint, on)
+            }
             fn set_gain(&mut self, kp: u16) -> duck_control::io::Result<()> {
                 self.0.set_gain(kp)
             }
@@ -4930,6 +4994,49 @@ mod tests {
         assert_eq!(torque, None, "the loop powered the joints on its own");
         assert_eq!(writes, 0, "torque was written {writes} times at startup");
         assert!(!s.homed.load(Ordering::Relaxed));
+    }
+
+    /// A mouth notification on a limp robot is narrower than `robot.init`: it powers and
+    /// commands the beak only, without starting a policy or writing a body target.
+    #[tokio::test]
+    async fn a_limp_mouth_command_only_touches_the_beak() {
+        let mut io = FakeIo::at(DEFAULT_POSITION).frozen();
+        let mut imu = FakeImu::new();
+        let state = Arc::new(RobotState::new(&Params::default(), false, false));
+        let intents = Arc::new(Intents::new());
+        intents.set_mouth(0.6);
+
+        let loop_state = Arc::clone(&state);
+        let handle = tokio::spawn(async move {
+            while loop_state.ticks.load(Ordering::Relaxed) < 5 {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            loop_state.shutdown.store(true, Ordering::Relaxed);
+        });
+        control_loop_probe_with(
+            &mut io,
+            &mut imu,
+            Arc::clone(&state),
+            Arc::clone(&intents),
+            Duration::from_millis(2),
+        )
+        .await;
+        handle.await.unwrap();
+
+        assert_eq!(
+            io.last_joint_torque,
+            Some((duck_control::model::MOUTH_INDEX, true))
+        );
+        assert_eq!(
+            io.last_joint_written,
+            Some((
+                duck_control::model::MOUTH_INDEX,
+                duck_control::model::mouth_target(0.6),
+            ))
+        );
+        assert_eq!(io.last_written, None, "a mouth cue wrote a full-body target");
+        assert!(!intents.snapshot().enabled, "a mouth cue enabled the policy");
+        assert_eq!(intents.snapshot().command.twist, [0.0; 3]);
     }
 
     /// Enabling a policy that is not there must not power the joints either.
