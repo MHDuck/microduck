@@ -457,19 +457,7 @@ cargo run -p xtask -- package \
     --include "deploy/journald.conf.d/10-robot.conf=deploy/journald.conf.d/10-robot.conf" \
     --include "docs/design/architecture.md=docs/architecture.md" \
     --include "docs/design/updater-design.md=docs/updater-design.md" \
-    --include "deploy/README.md=docs/deploy.md" \
-    --include "policies/walk.onnx=policies/walk.onnx" \
-    --include "policies/kp30.onnx=policies/kp30.onnx" \
-    --include "policies/alpha_walking.onnx=policies/alpha_walking.onnx" \
-    --include "policies/alpha_stand.onnx=policies/alpha_stand.onnx" \
-    --include "policies/alpha_sitstand.onnx=policies/alpha_sitstand.onnx" \
-    --include "policies/alpha_ground_pick.onnx=policies/alpha_ground_pick.onnx" \
-    --include "policies/ball_kick_left.onnx=policies/ball_kick_left.onnx" \
-    --include "policies/ball_kick_right.onnx=policies/ball_kick_right.onnx" \
-    --include "policies/roller.onnx=policies/roller.onnx" \
-    --include "policies/roller_crouch.onnx=policies/roller_crouch.onnx" \
-    --include "policies/roulade.onnx=policies/roulade.onnx" \
-    --include "pet-detect/models/pet_detect.onnx=models/pet_detect.onnx"
+    --include "deploy/README.md=docs/deploy.md" 
 
 
 echo "==> signing with $KEY"
