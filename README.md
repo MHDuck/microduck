@@ -273,7 +273,7 @@ sudo systemctl start robotd padd
 | [tools/servo-web/](tools/servo-web/) | 舵机网页调试工具 |
 | [docs/](docs/) | 操作、架构与开发文档 |
 
-常用文档：[中文入门指南](Microduck入门指南.md) · [命令速查](docs/robot/cheatsheet.md) · [系统架构](docs/design/architecture.md) · [开发指南](CONTRIBUTING.md) · [文档索引](docs/README.md)。
+常用文档：[中文入门指南](Microduck入门指南.md) · [故障排除](故障排除.md) · [断开连接处理](断开连接处理.md) · [命令速查](docs/robot/cheatsheet.md) · [系统架构](docs/design/architecture.md) · [开发指南](CONTRIBUTING.md) · [文档索引](docs/README.md)。
 
 部分文档沿用上游平台和示例参数；本分支的硬件配置以当前源码及 `deploy/robotd.toml` 为准，已部署设备以 `/etc/robot/robotd.toml` 为准。
 
