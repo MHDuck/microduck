@@ -21,7 +21,7 @@ This project uses a **Radxa ZERO 3W with 2 GB RAM, no eMMC, and hardware revisio
 | Debugging | Web-based servo tools, state monitoring, and current logging |
 | Training workflow | Train and export ONNX in a separate training repository, then deploy here |
 
-This repository focuses on hardware operation and deployment. Training code lives in the repositories linked below. Available motions depend on the deployed policies and configuration.
+This repository focuses on hardware operation and deployment. Its companion training repository is [MHDuck/microduck_rl](https://github.com/MHDuck/microduck_rl). Available motions depend on the deployed policies and configuration.
 
 ## 2. Hardware and interfaces
 
@@ -63,7 +63,9 @@ ONNX policies control 14 joints; the mouth is controlled separately. Policy arra
 
 ## 3. Policies and training
 
-The training project originates from [pollen-robotics/microduck_rl](https://github.com/pollen-robotics/microduck_rl), with adaptation references from [LuwuDynamics/xgoduck_rl](https://github.com/LuwuDynamics/xgoduck_rl). See those repositories for training environments and export instructions.
+The companion training repository for this project is **[MHDuck/microduck_rl](https://github.com/MHDuck/microduck_rl)**. See that repository for environment setup, policy training, and ONNX export instructions.
+
+The training project originates from [pollen-robotics/microduck_rl](https://github.com/pollen-robotics/microduck_rl), with adaptation references from [LuwuDynamics/xgoduck_rl](https://github.com/LuwuDynamics/xgoduck_rl).
 
 The runtime expects this model interface:
 

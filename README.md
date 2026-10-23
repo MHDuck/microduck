@@ -21,7 +21,7 @@
 | 调试工具 | 舵机网页调试台、状态监控、电流记录 |
 | 训练流程 | 在独立训练仓库中训练并导出 ONNX，再部署到本运行时 |
 
-本仓库主要负责实机运行与部署；训练源码位于下文列出的训练仓库。可执行的动作取决于已部署模型和配置。
+本仓库主要负责实机运行与部署；配套训练仓库为 [MHDuck/microduck_rl](https://github.com/MHDuck/microduck_rl)。可执行的动作取决于已部署模型和配置。
 
 ## 2. 硬件与接口
 
@@ -63,7 +63,9 @@ ONNX 输出控制其中 14 个关节，嘴部单独控制。模型数组顺序�
 
 ## 3. 模型与训练
 
-训练工程来源为 [pollen-robotics/microduck_rl](https://github.com/pollen-robotics/microduck_rl)，训练适配参考 [LuwuDynamics/xgoduck_rl](https://github.com/LuwuDynamics/xgoduck_rl)。训练环境与导出方法请查阅对应仓库。
+本工程的配套训练仓库为 **[MHDuck/microduck_rl](https://github.com/MHDuck/microduck_rl)**，训练环境配置、模型训练与 ONNX 导出方法请查阅该仓库。
+
+训练工程上游来源为 [pollen-robotics/microduck_rl](https://github.com/pollen-robotics/microduck_rl)，训练适配参考 [LuwuDynamics/xgoduck_rl](https://github.com/LuwuDynamics/xgoduck_rl)。
 
 本运行时使用的模型接口为：
 
