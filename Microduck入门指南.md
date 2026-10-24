@@ -30,17 +30,17 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 热点名称（SSID） | `duck`，全部小写 |
-| 热点密码 | `1234567890` |
+| 热点名称（SSID） | `MOHENG`，全部大写 |
+| 热点密码 | `88607979` |
 
 热点名称和密码必须完全一致，不要多输空格。保持热点开启；如果手机有“无人连接时自动关闭热点”设置，首次连接时关闭该选项。
 
-按本次交付配置，Microduck 开机后会尝试自动连接 `duck`。若始终连接不上，可将手机热点切换到 2.4 GHz 或兼容模式后再试。
+按本次交付配置，Microduck 开机后会尝试自动连接 `MOHENG`。若始终连接不上，可将手机热点切换到 2.4 GHz 或兼容模式后再试。
 
 ## 2. 给 Microduck 上电，电脑连接同一个热点
 
 1. 扶稳 Microduck，按交付时说明接好配套电池并上电。
-2. 将电脑的 Wi-Fi 也连接到 `duck`，密码同样是 `1234567890`。
+2. 将电脑的 Wi-Fi 也连接到 `MOHENG`，密码同样是 `88607979`。
 3. 等待约 1 分钟，让机器人完成系统启动和 Wi-Fi 连接。若尚未出现，可以再等 1～2 分钟。
 4. 在手机热点的已连接设备列表中确认电脑和机器人已连接；设备名称可能显示为 `radxa`，也可能只显示 IP 或其他名称。
 
@@ -97,17 +97,19 @@ ssh radxa@192.168.43.120
 
 PuTTY 也可以把 Host Name 改成该实际 IP。本文所有 IP 均为示例，不要直接认定设备使用这个地址。
 
-如果使用实际 IP 仍然超时，确认电脑和机器人都连着 `duck`，并检查热点是否限制设备互访。需要时换一部手机建立同名、同密码热点；不要让两个同名热点同时开启。
+如果使用实际 IP 仍然超时，确认电脑和机器人都连着 `MOHENG`，并检查热点是否限制设备互访。需要时换一部手机建立同名、同密码热点；不要让两个同名热点同时开启。
 
-## 4. 修改机器人保存的 Wi-Fi（可选）
+## 4. 修改机器人保存的 Wi-Fi 名称或密码（可选）
 
-第一次使用可以跳过本节，保持连接 `duck`，直接进入第 5 节。
+第一次使用可以跳过本节，保持连接 `MOHENG`，直接进入第 5 节。
 
-本节修改的是**机器人连接哪个 Wi-Fi**。更换后，电脑也要连接新的 Wi-Fi，才能继续 SSH 控制。不要先修改手机上现有 `duck` 热点的名称或密码，否则可能先失去机器人连接。
+> [!WARNING]
+> **Wi-Fi / SSH 是本入门指南的唯一控制入口。修改后，一定要记住并妥善保存新的 Wi-Fi 名称和密码！**
+> 忘记密码、填错配置或让电脑与机器人连接不同的网络，都会导致无法通过 SSH 连接和控制机器人。修改前先记录新信息，核对无误后再应用；不要假定连接失败后会自动恢复默认热点。
 
-Armbian 从 24.05 起使用 Netplan 描述网络配置；官方 Minimal 镜像通常使用 `systemd-networkd`，CLI/桌面镜像通常使用 NetworkManager。本项目的部署流程还可能迁移网络后端，因此应以设备实际状态为准。[Armbian 官方网络说明](https://docs.armbian.com/user-guide/networking/)
+本节修改机器人保存的 Wi-Fi 信息。手机热点或路由器也必须使用对应的名称和密码，电脑需要连接同一个网络。先完成机器人端的编辑和保存，再按下面步骤切换网络。
 
-**准备工作：**先确认新 Wi-Fi 的名称和密码，并确保它允许设备互访。扶稳机器人；如果正在键盘控制，先按空格停止移动，托住机身后按 Esc 退出。然后在机器人端执行：
+**准备工作：**扶稳机器人；如果正在键盘控制，先按空格停止移动，托住机身后按 Esc 退出。然后在机器人端执行：
 
 ```bash
 sudo systemctl stop robotd
@@ -115,126 +117,71 @@ sudo systemctl stop robotd
 
 通常没有输出，返回提示符即可。配置网络期间保持机器人处于有支撑的静止状态。
 
-### 4.1 判断使用哪一种配置方式
+### 4.1 打开 Wi-Fi 配置文件
 
-在机器人端执行：
-
-```bash
-nmcli device status
-```
-
-NetworkManager 管理 Wi-Fi 时的**示例输出**：
-
-```text
-DEVICE  TYPE      STATE      CONNECTION
-wlan0   wifi      connected  duck
-lo      loopback  connected  lo
-```
-
-若 Wi-Fi 这一行显示 `connected`，按 **4.2** 操作。无线接口名可能不是 `wlan0`，后续请使用实际名称；`CONNECTION` 是连接配置的名称，也可能与热点名称不同。
-
-若提示 `nmcli: command not found`、`NetworkManager is not running`，或 Wi-Fi 显示 `unmanaged`，再执行：
+在**机器人端 SSH 终端**执行：
 
 ```bash
-systemctl is-active systemd-networkd
+sudo nano /etc/NetworkManager/system-connections/robot-wifi.nmconnection
 ```
 
-如果输出 `active`，按 **4.3** 操作。两个服务可能同时运行，不要仅凭服务是否启动就判断谁管理 Wi-Fi；如无法判断，保留 `duck`，把这些命令的实际输出交给售后确认。
+该命令打开 NetworkManager 的现有 Wi-Fi 配置。若编辑器显示空白新文件，按 `Ctrl+X` 退出且不保存，联系售后核对文件路径和交付配置。
 
-### 4.2 NetworkManager：用命令连接新 Wi-Fi
+找到 `[wifi]` 下的 `ssid=` 和 `[wifi-security]` 下的 `psk=`。默认值如下，**这里只展示需要修改的字段，不要用这段内容覆盖整个文件**：
 
-以下以无线接口 `wlan0`、新 Wi-Fi 名称 `CustomerWiFi` 为例。请替换为现场实际值。
+```ini
+[wifi]
+ssid=MOHENG
 
-先扫描：
+[wifi-security]
+psk=88607979
+```
+
+- `ssid=` 后填写要连接的 Wi-Fi 名称，区分大小写。
+- `psk=` 后填写该 Wi-Fi 的密码；仅修改密码时保留原来的 `ssid=`。
+- 保留其他配置，包括 `[connection]` 中的 `id=robot-wifi`、UUID 和 IP 设置。
+
+这里修改的是 **Wi-Fi 密码**；SSH 登录和 `sudo` 使用的机器人账户密码仍按第 3 节说明输入。
+
+### 4.2 保存并应用
+
+1. 再次核对新 Wi-Fi 名称和密码，并妥善记录。
+2. 按 `Ctrl+O` 保存，按 **Enter** 确认原文件名。
+3. 按 `Ctrl+X` 退出编辑器。
+
+依次执行以下命令，让 NetworkManager 读取修改后的配置；若出现报错，先处理报错，不要继续切换网络：
 
 ```bash
-sudo nmcli device wifi list ifname wlan0
+sudo chmod 600 /etc/NetworkManager/system-connections/robot-wifi.nmconnection
+sudo nmcli connection load /etc/NetworkManager/system-connections/robot-wifi.nmconnection
 ```
 
-**示例输出，省略部分列：**
+配置文件需保持仅 root 可读写；手动编辑后需要重新加载。[NetworkManager 配置文件说明](https://networkmanager.dev/docs/api/latest/nm-settings-keyfile.html)
 
-```text
-IN-USE  SSID          SIGNAL  SECURITY
-*       duck          85      WPA2
-        CustomerWiFi  78      WPA2
-```
-
-再连接新网络，按提示输入**新 Wi-Fi 的密码**：
+**下一条命令会重新连接 Wi-Fi，当前 SSH 可能立即断开。**如果更换到另一个热点，先开启目标热点；如果修改的是当前手机热点的名称或密码，执行下一条命令后，再将手机热点改为刚才保存的新信息，并让电脑重新连接。
 
 ```bash
-sudo nmcli --ask device wifi connect "CustomerWiFi" ifname wlan0 name "microduck-client-wifi"
+sudo nmcli connection up id robot-wifi
 ```
 
-**示例回复：**
+`robot-wifi` 是配置文件中 `[connection]` 的 `id`，不是热点名称；若交付配置的 `id` 不同，请使用文件中的实际值。此命令会激活已加载的连接配置。[NetworkManager 命令说明](https://networkmanager.dev/docs/api/latest/nmcli.html)
 
-```text
-Password:
-Device 'wlan0' successfully activated with '[连接UUID]'.
-```
+### 4.3 重新登录并确认网络可用
 
-这里的 `Password:` 是 Wi-Fi 密码；如果此前先出现 `[sudo] password for radxa:`，那一处才是机器人账户密码。`--ask` 会交互询问密码，不必把 Wi-Fi 密码写进命令。[NetworkManager 命令说明](https://networkmanager.dev/docs/api/latest/nmcli.html)
-
-**切换网络可能使当前 SSH 立即断开，因此不一定能看到成功回复。**将电脑连接到 `CustomerWiFi`，等机器人完成连接后重新执行：
+将电脑连接到新的 Wi-Fi，等待机器人完成连接后重新执行：
 
 ```bash
 ssh radxa@radxa.local
 ```
 
-如果主机名失效，改用新路由器或热点设备列表中的机器人实际 IP。登录后先执行 `nmcli device status`，确认无线接口已连接到 `microduck-client-wifi`，再设置保存的连接自动启用：
+如果主机名无法解析，到新热点或路由器的设备列表查看机器人实际 IP，按第 3.3 节用 IP 登录。重新登录后，在机器人端执行：
 
 ```bash
-sudo nmcli connection modify "microduck-client-wifi" connection.autoconnect yes connection.autoconnect-priority 100
-```
-
-该命令通常没有输出。优先级用于自动选择连接，不会立即切换当前网络。保留原有 `duck` 配置，暂时不要删除，便于现场恢复连接。
-
-如果偏好菜单操作，在确认 Wi-Fi 由 NetworkManager 管理后，也可以用 `sudo nmtui`，进入 **Activate a connection（激活连接）**，选择新 Wi-Fi 并输入密码。网络切换后同样需要重新连接 SSH。
-
-### 4.3 Netplan / systemd-networkd：使用新版 Armbian 配置工具
-
-先备份现有 Netplan 配置。在机器人端执行：
-
-```bash
-sudo cp -a /etc/netplan "/root/netplan-backup-$(date +%Y%m%d-%H%M%S)"
-```
-
-正常情况下没有输出，备份保存在机器人 `/root/` 目录下；这份备份不会自动恢复网络。如果提示 `/etc/netplan` 不存在，先停止修改并联系售后确认网络方式。
-
-新版 Armbian 官方工具提供网络设置入口：
-
-```bash
-sudo armbian-config --cmd BNS001
-```
-
-该命令通常打开交互菜单，**不是打印一行固定的成功提示**。按屏幕指引完成：
-
-1. 选择无线接口，例如 `wlan0`。
-2. 选择目标 Wi-Fi。
-3. 输入新 Wi-Fi 密码。
-4. IP 获取方式选择 **DHCP（自动获取）**。
-5. 确认并应用。
-
-使用方向键选择、Tab 切换按钮、Enter 确认；菜单名称可能因工具版本和语言不同而变化。这一入口及上述流程来自 [Armbian 官方网络配置工具说明](https://docs.armbian.com/config/network/)。
-
-如果已安装的旧版工具不支持 `--cmd BNS001`，运行 `sudo armbian-config`，在 **Network（网络）** 中寻找 Wi-Fi 设置。若提示 `armbian-config: command not found` 或菜单无法使用，先保留默认热点，将报错交给售后；不要为完成首次体验自行更换网络后端或覆盖整套 Netplan 配置。
-
-应用时 SSH 可能断开。将电脑连到新 Wi-Fi，再按第 3 节重新登录。若始终无法连接，在新路由器和原热点的设备列表中分别查找机器人；不要假定更改失败后必定自动回到 `duck`。
-
-### 4.4 确认新网络可用
-
-重新登录后，在机器人端执行：
-
-```bash
+nmcli device status
 hostname -I
 ```
 
-**示例输出：**
-
-```text
-192.168.1.120
-```
-
-可能显示多个地址。能在电脑连接新 Wi-Fi 后重新 SSH 登录，才说明控制连接已经恢复。机器人和电脑后续都应连接这个新网络，再进入第 5 节。
+能在新网络下重新 SSH 登录，才说明控制连接已经恢复。确认新 Wi-Fi 名称和密码已保存后，再进入第 5 节启动控制服务。
 
 ## 5. 启动 Microduck 键盘控制
 
@@ -409,14 +356,14 @@ Wi-Fi 问题可附上：
 ```bash
 hostname -I
 nmcli device status
-systemctl is-active systemd-networkd
+systemctl is-active NetworkManager
 ```
 
 如果某条命令提示不存在，也把该提示一并发回。无需发送 Wi-Fi 密码或包含密码的网络配置文件。
 
 ## 8. 完整操作示例：命令与回复
 
-以下假设电脑和机器人已连接 `duck`、已接受过 SSH 主机密钥、服务启动正常，展示从登录到退出的过程。**全部为示例交互，不是设备实测；`[操作：…]` 是人工按键说明，不能输入或粘贴到终端。**
+以下假设电脑和机器人已连接 `MOHENG`、已接受过 SSH 主机密钥、服务启动正常，展示从登录到退出的过程。**全部为示例交互，不是设备实测；`[操作：…]` 是人工按键说明，不能输入或粘贴到终端。**
 
 ```text
 PS C:\Users\Customer> ssh radxa@radxa.local
