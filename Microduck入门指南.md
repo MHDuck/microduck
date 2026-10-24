@@ -1,5 +1,12 @@
 # Microduck 入门指南
 
+> [!IMPORTANT]
+> **本指南以 GitHub 上的最新版本为准。**
+>
+> **[点击查看 GitHub 最新版《Microduck 入门指南》](https://github.com/MHDuck/microduck/blob/master/Microduck%E5%85%A5%E9%97%A8%E6%8C%87%E5%8D%97.md)**
+>
+> 使用前请查看在线最新版；下载、打印或转发的副本可能已过时，如内容有差异，请以 GitHub 最新版为准。
+
 适用对象：已收到完成系统安装、机器人程序部署和出厂配置的 Microduck 的客户。
 
 本文带你完成：连接热点 → SSH 登录 → 可选修改 Wi-Fi → 键盘控制 → 退出和关机。
