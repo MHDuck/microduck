@@ -6,6 +6,8 @@
 
 [硬件与接口](#2-硬件与接口) · [模型与训练](#3-模型与训练) · [编译与部署](#4-编译与部署) · [使用说明](#5-使用说明) · [文档导航](#6-仓库结构与文档) · [致谢](#7-项目来源与致谢)
 
+重新安装或更新软件：[重新部署软件](重新部署软件.md) → [校准](校准.md)。断连或刷机恢复见 [断开连接处理](断开连接处理.md)。
+
 ## 1. 项目简介
 
 本工程 fork 自 [Pollen Robotics / microduck](https://github.com/pollen-robotics/microduck)，在其 Rust 运行时基础上适配 **飞特 HD1910 电机**，并将 IMU 改为通过 **I²C（IIC）连接的 BNO085**。
@@ -91,6 +93,8 @@ obs [1, 61] → ONNX policy → actions [1, 14]
 
 ## 4. 编译与部署
 
+**重新部署顺序：安装 PC 依赖 → 配置 Rust / Zig → 部署 RK3566 环境 → 推送模型和配置 → 网页校准。** 以下命令同时适用于 PC 原生 Ubuntu 和 WSL Ubuntu；详细依赖用途、板端软件清单及排错见 [重新部署软件](重新部署软件.md)。
+
 ### 4.1 板端首次上电
 
 将 **Armbian 26.8.1 精简版**写入 TF 卡，插入主板并上电。按首次启动提示设置**用户名、密码和 Wi-Fi 信息**，确认电脑可以通过 SSH 登录主板，且该账号具有 sudo 权限。
@@ -99,28 +103,40 @@ obs [1, 61] → ONNX policy → actions [1, 14]
 
 ### 4.2 PC 端准备 WSL Ubuntu 环境
 
-在 PC 的 **WSL Ubuntu** 中，先按[清华大学 Ubuntu 镜像使用说明](https://mirrors.tuna.tsinghua.edu.cn/help/ubuntu/)配置国内 APT 更新源，选择与 WSL 中 Ubuntu 版本一致的配置。
+在 PC 的 **Ubuntu / WSL Ubuntu** 中操作，下面的统一准备清单以 **Ubuntu 24.04 LTS** 为基线。需要更换国内源时，按[清华大学 Ubuntu 镜像使用说明](https://mirrors.tuna.tsinghua.edu.cn/help/ubuntu/)选择与本机 Ubuntu 版本一致的配置。
 
-在 WSL 终端安装基础工具：
+先启用 Universe 软件源，再一次安装本项目 SSH 部署、本机构建和开发检查使用的 APT 软件包；间接依赖由 APT 自动安装：
 
 ```bash
 sudo apt update
-sudo apt install git curl npm nodejs gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+sudo apt install -y software-properties-common
+sudo add-apt-repository -y universe
+sudo apt update
+sudo apt install -y \
+  git curl ca-certificates openssh-client \
+  build-essential pkg-config cmake binutils \
+  gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross \
+  python3 python3-venv python3-pip \
+  libudev-dev libdbus-1-dev libssl-dev \
+  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev \
+  nodejs npm \
+  bash coreutils findutils grep sed gawk tar gzip xz-utils zstd unzip file
 ```
 
-克隆或下载本仓库，进入仓库根目录。通过现有脚本安装 Rust、Python 构建环境、`cargo-zigbuild` 和 Zig，再加载 Rust 环境并确认 ARM64 交叉编译目标：
+克隆或更新本仓库，进入仓库根目录。APT 不负责安装本项目使用的 Rust / Zig 工具链，还需执行：
 
 ```bash
 bash setup-build.sh
 source "$HOME/.cargo/env"
 rustup target add aarch64-unknown-linux-gnu
+cargo fetch --locked
 ```
 
-Rust 版本要求为 1.89 或更新版本。`setup-build.sh` 已配置国内 Rust 镜像和清华 PyPI 镜像；完整工作区构建说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+Rust 版本要求为 1.89 或更新版本。`setup-build.sh` 配置 Rust、Python 虚拟环境、`cargo-zigbuild` 与 `ziglang==0.14.1`，使用国内 Rust 镜像和清华 PyPI 镜像。ARM64 的 GStreamer / udev 库由部署脚本准备独立 sysroot，不能用 PC 的同名库代替。各包用途、可选的 PC 蓝牙支持和非 APT 依赖见 [完整软件清单](重新部署软件.md#pc-packages)。
 
 ### 4.3 部署系统服务
 
-先完成模型准备，并核对 [deploy/robotd.toml](deploy/robotd.toml) 中的串口、IMU 和策略配置。在 **PC 的 WSL Ubuntu** 中，从仓库根目录执行：
+先完成模型准备，并核对 [deploy/robotd.toml](deploy/robotd.toml) 中的串口、IMU 和策略配置。在 **PC 的 Linux / WSL 终端**中，从仓库根目录执行：
 
 ```bash
 bash scripts/provision-board.sh \
@@ -129,13 +145,13 @@ bash scripts/provision-board.sh \
   radxa@192.168.2.90
 ```
 
-脚本从当前源码构建并打包服务，配置板端环境和 systemd 服务；过程中可能重启主板。`--pause-btd-on-pair` 配置手柄配对兼容行为，在配对期间暂停 `btd`；`--name Ducky` 设置机器人名称。脚本会为本地构建准备签名密钥，私钥保存在仓库外。
+脚本从当前源码构建并打包服务，初始化或刷新板端环境；过程中可能重启主板。`--pause-btd-on-pair` 配置手柄配对兼容行为，在配对期间暂停 `btd`；`--name Ducky` 设置机器人名称。脚本会为本地构建准备签名密钥，私钥保存在仓库外，并安装 `servo-web` 校准网页服务。
 
-安装过程中可能还需要补充软件包或系统库；可将具体报错交给 AI 辅助定位并安装缺失依赖，然后继续部署。安装流程的补充说明见 [主板安装文档](docs/robot/install-dev.md)，本分支以本节命令与当前脚本为准。
+板端已有 `/opt/robot/daemon/current` 时，此步骤刷新环境而不替换现有运行时版本，仍需继续下一步推送。脚本不会自动更新 PC 上的源码和模型；“最新”指本机已准备好的版本。失败时先按 [部署排错](重新部署软件.md#deploy-errors) 处理，成功后再继续。
 
 ### 4.4 下发模型和程序
 
-系统服务部署完成后，在 **PC 的 WSL Ubuntu** 中执行：
+系统服务部署完成后，在 **PC 的 Linux / WSL 终端、仓库根目录**执行：
 
 ```bash
 bash build.sh
@@ -144,7 +160,7 @@ sh xh_push.sh radxa@192.168.2.90
 
 上传入口为仓库根目录的 [xh_push.sh](xh_push.sh)。`bash build.sh` 生成 `target/native/aarch64-unknown-linux-gnu/release/robotd`；已有最新编译产物时，可直接执行上传命令。
 
-上传脚本下发 `robotd`、`policies/*.onnx`、键盘控制脚本与 `deploy/robotd.toml`，校验程序和配置的 SHA-256，并重启 `robotd`。
+上传脚本下发 `robotd`、`policies/*.onnx`、控制 / 诊断脚本与 `deploy/robotd.toml`，校验程序和配置的 SHA-256，并重启 `robotd`。不带 `--build` 的 `xh_push.sh` 不会自动编译，所以源码更新后先执行上面的 `bash build.sh`。
 
 **上传会覆盖板端 `/etc/robot/robotd.toml`。** 板端调试后的参数应先同步回本地配置。后续更新程序或模型也使用上述命令。
 
@@ -176,6 +192,28 @@ robotctl health
 robotctl monitor
 journalctl -u robotd -b -n 80 --no-pager
 ```
+
+### 4.7 部署完成后进行网页校准
+
+先托稳机器人，在 **RK3566 的 SSH 终端**运行：
+
+```bash
+sudo systemctl restart servo-web
+```
+
+启动调试台会停止 `robotd`、`padd`、`mediad` 和 `tofd`。在 **PC 浏览器**打开 [校准网页](http://192.168.2.90:8081/)，确认设备已连接、位置持续刷新，标准整机应有 15 颗舵机在线。IP 按实机替换。
+
+把真机摆成下图的零位：**双腿伸直、不外撇，脚底与小腿成直角，脖子竖直，头部平视朝前，嘴闭合**。手动摆动前先支撑并关闭相应舵机扭矩，不硬掰有力的关节。难以保持姿态时，可使用我们的校准工装辅助固定。
+
+<p><img src="docs/images/calibration-zero-pose.png" alt="图 1：校准用摆直零位姿态" width="260"> <img src="docs/images/calibration-fixture.jpg" alt="图 2：MHDuck 校准工装实物参考" width="300"></p>
+
+在网页“一键校准”区域选择 **“零位 2048（鸭子摆直）”**，核对校准列表，然后点击 **“一键校准”**，检查弹出的逐颗预览并确认。**工装实际固定的姿态必须与基准一致；若固定为折叠姿态，不能套用摆直零位，需按 [校准说明](校准.md#fixture) 选择匹配基准。** “全部回零位（2048）”是运动按钮，不是校准按钮。
+
+<p><img src="docs/images/calibration-button.png" alt="一键校准按钮位置；截图用于识别界面，实际操作前必须确认连接正常" width="900"></p>
+
+上图是按钮位置示例，截图中的“断开”和保留姿态不是可执行校准的状态。校准完成后查看成功 / 失败列表，再按 [校准文档](校准.md) 验证和恢复控制；图中姿态、工装、完整界面及操作细节均在该文档中。
+
+**校准保存与换板：** 实际零点写在每颗舵机的 EEPROM 中；板端默认的 `~/microduck/tools/servo-web/calib/eeprom-*.json` 是校准前的偏移备份，用于撤销。同一只 duck 只换 RK3566，校准随原舵机保留；另一只 duck 使用另一套舵机时，应重新校准，不能套用旧备份。实际目录、结果日志和迁移说明见 [校准文件与 RK3566 迁移](校准.md#calibration-migration)。
 
 ## 5. 使用说明
 
@@ -275,7 +313,7 @@ sudo systemctl start robotd padd
 | [tools/servo-web/](tools/servo-web/) | 舵机网页调试工具 |
 | [docs/](docs/) | 操作、架构与开发文档 |
 
-常用文档：[中文入门指南](Microduck入门指南.md) · [故障排除](故障排除.md) · [断开连接处理](断开连接处理.md) · [命令速查](docs/robot/cheatsheet.md) · [系统架构](docs/design/architecture.md) · [开发指南](CONTRIBUTING.md) · [文档索引](docs/README.md)。
+常用文档：[重新部署软件](重新部署软件.md) · [校准](校准.md) · [中文入门指南](Microduck入门指南.md) · [故障排除](故障排除.md) · [断开连接处理](断开连接处理.md) · [命令速查](docs/robot/cheatsheet.md) · [系统架构](docs/design/architecture.md) · [开发指南](CONTRIBUTING.md) · [文档索引](docs/README.md)。
 
 部分文档沿用上游平台和示例参数；本分支的硬件配置以当前源码及 `deploy/robotd.toml` 为准，已部署设备以 `/etc/robot/robotd.toml` 为准。
 
