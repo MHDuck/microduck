@@ -1424,9 +1424,7 @@ fn build_controller(
         };
         match Policy::load(&paths, DEFAULT_STANDING_THRESHOLD) {
             Ok(mut policy) => {
-                // Roller mode has no standing network — command magnitude stops selecting
-                // it. Nothing else reserves it: limp-fall hands back by *letting* the
-                // standing network be selected, which is what stands the robot up.
+                // Roller mode must not select the standing network when enabled.
                 if policy_cfg.mode == Mode::Roller {
                     policy.set_standing_disabled(true);
                 }
@@ -1533,6 +1531,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
     let mut window_ticks = 0u64;
     let mut last_summary = Instant::now();
     let mut was_driving = false;
+    let mut was_enabled = false;
     let mut bringup = Bringup::Limp;
     // `robot.mouth` is also valid while the body is limp. No bus write happens until a client
     // sends a mouth edge, and only the beak servo is powered.
@@ -1775,6 +1774,20 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
         let (gated, deadman) = safety.gate(snapshot.command, snapshot.twist_age);
         let mut limits: Vec<duck_control::safety::Limit> = deadman.into_iter().collect();
         limits.extend(protection);
+
+        if let Some(controller) = controller.as_mut() {
+            if snapshot.enabled && !was_enabled {
+                controller.enable();
+            }
+            if snapshot.enabled
+                && !snapshot.pose.active
+                && gated.twist != [0.0; 3]
+                && shutdown_sit.is_none()
+            {
+                controller.walk();
+            }
+        }
+        was_enabled = snapshot.enabled;
 
         // An explicit `robot.init` / `robot.relax`, taken once.
         //
@@ -2125,15 +2138,11 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                 }
                 LimpFall::Posing { since, .. } => {
                     if tick_start.duration_since(since) >= limp_fall_pose {
-                        tracing::warn!("posed — handing back to the standing policy");
+                        tracing::warn!("posed — resuming the selected policy");
                         limp_fall = LimpFall::Idle;
                         falling.reset();
                         hold = DEFAULT_POSITION;
-                        // Hand back to the policy, and let it choose. The twist has been
-                        // held at zero through the whole sequence, so with nobody driving
-                        // the standing network is what command magnitude selects — which
-                        // is the stand-up. A client that *is* driving gets its walk back;
-                        // the humans stay in charge, here as everywhere else.
+                        // Reset feedback without changing the selected model.
                         if let Some(controller) = controller.as_mut() {
                             controller.reset();
                         }

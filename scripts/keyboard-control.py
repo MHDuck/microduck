@@ -351,6 +351,10 @@ def main():
                                 call("robot.stop", {})
                             elif key in skills and enabled:
                                 if pressed:
+                                    velocity = (0.0, 0.0, 0.0)
+                                    expires = 0.0
+                                    roll_until = 0.0
+                                    call("robot.stop", {})
                                     result = call("robot.do", {"skill": skills[key]}, allow_refusal=True)
                                     if key == "x":
                                         roll_accepted = result is not None
@@ -395,6 +399,7 @@ def main():
                                 if pressed:
                                     velocity = (0.0, 0.0, 0.0)
                                     expires = 0.0
+                                    roll_until = 0.0
                                     call("robot.stop", {})
                                     try:
                                         call("robot.do", {"skill": "sit_toggle"})
@@ -468,12 +473,15 @@ def main():
                                 field, step, low, high = pose_keys[key]
                                 pose[field] = max(low, min(high, round(pose[field] + step, 4)))
                             elif mode == "drive" and key in ("w", "s") and enabled:
+                                roll_until = 0.0
                                 vx = round(velocity[0] + (0.10 if key == "w" else -0.10), 2)
                                 velocity = (max(-0.40, min(0.40, vx)), velocity[1], velocity[2])
                             elif mode == "drive" and key in ("a", "d") and enabled:
+                                roll_until = 0.0
                                 vy = round(velocity[1] + (0.10 if key == "a" else -0.10), 2)
                                 velocity = (velocity[0], max(-0.40, min(0.40, vy)), velocity[2])
                             elif mode == "drive" and key in turns and enabled:
+                                roll_until = 0.0
                                 velocity = (velocity[0], velocity[1], turns[key])
                                 # shortcut: terminal repeats replace key-up events; use evdev for exact release timing.
                                 expires = time.monotonic() + 0.30

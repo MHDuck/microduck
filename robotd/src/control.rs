@@ -9,13 +9,13 @@
 //! ```text
 //! skill windows ← advance / expire (roulade window, kick timer, ground-pick phase, sit↔stand rise)
 //! command      ← the caller's smoothed command, re-encoded for the active skill
-//! net          ← roulade > kick > ground pick > sit/rise > stand-by-magnitude > walk
+//! net          ← retain the selected model until an enable, movement or skill request
 //! action       ← ONNX
 //! targets      ← home pose + action_scale × action
 //! filters      ← optional first-order low-pass on head and legs
 //! ```
 //!
-//! The priority chain and every numeric default come from `microduck_runtime`'s
+//! The skill timing and every numeric default come from `microduck_runtime`'s
 //! `control_step`, which this replaces. Two of its subtleties are worth naming because they
 //! are easy to "fix" by accident:
 //!
@@ -42,8 +42,7 @@ const HEAD_JOINTS: std::ops::Range<usize> = 5..9;
 /// The ground pick hands back at this fraction of its cycle — the prototype's cutoff.
 const GROUND_PICK_END_PHASE: f64 = 0.7;
 
-/// How long the sitstand network rises (posture flag 0) before the main policy takes over.
-/// 1 s is enough on the robot — velstand owns the tail of the rise fine.
+/// Minimum rise time before another sit toggle; the sitstand model stays selected.
 const RISE_SECS: f64 = 1.0;
 
 /// How recently a roulade request must have arrived, at the end of a roll, for another to
@@ -135,8 +134,7 @@ enum Sit {
     Up,
     /// The sitstand network holds the seat (posture flag 1).
     Sitting,
-    /// The sitstand network rises (posture flag 0) for the remaining seconds, then the
-    /// main policy takes over.
+    /// The sitstand network rises (posture flag 0); toggling is blocked for this duration.
     Rising {
         remaining: f64,
     },
@@ -144,6 +142,7 @@ enum Sit {
 
 pub struct Controller {
     policy: Policy,
+    net: Net,
     tuning: Tuning,
     skills: SkillTuning,
     /// Raw previous policy output, which the observation feeds back. Raw, not scaled: the
@@ -170,6 +169,7 @@ impl Controller {
     pub fn new(policy: Policy, tuning: Tuning, skills: SkillTuning) -> Self {
         Self {
             policy,
+            net: Net::Walk,
             tuning,
             skills,
             last_action: [0.0; ACTION_LEN],
@@ -192,6 +192,29 @@ impl Controller {
         self.previous = None;
     }
 
+    fn select(&mut self, net: Net) {
+        self.net = net;
+        self.ground_pick = None;
+        self.kick = None;
+        self.roulade = None;
+        self.roulade_chain = 0.0;
+        self.sit = Sit::Up;
+    }
+
+    pub fn enable(&mut self) {
+        self.select(if self.policy.will_stand(0.0) {
+            Net::Stand
+        } else {
+            Net::Walk
+        });
+    }
+
+    pub fn walk(&mut self) {
+        if self.net != Net::Walk {
+            self.select(Net::Walk);
+        }
+    }
+
     pub fn has_sitstand(&self) -> bool {
         self.policy.has_sitstand()
     }
@@ -206,6 +229,8 @@ impl Controller {
         self.ground_pick.is_some()
             || self.kick.is_some()
             || self.roulade.is_some()
+            // These retained models can keep moving even after their trigger window.
+            || matches!(self.net, Net::Roulade | Net::KickLeft | Net::KickRight)
             || matches!(self.sit, Sit::Rising { .. })
     }
 
@@ -219,6 +244,7 @@ impl Controller {
         if self.ground_pick.is_some() {
             return Err("ground pick already running");
         }
+        self.select(Net::GroundPick);
         self.ground_pick = Some(0.0);
         Ok(())
     }
@@ -231,6 +257,7 @@ impl Controller {
         if self.kick.is_some() || self.ground_pick.is_some() || self.roulade.is_some() {
             return Err("a scripted move is already running");
         }
+        self.select(if left { Net::KickLeft } else { Net::KickRight });
         self.kick = Some((left, self.skills.kick_duration));
         Ok(())
     }
@@ -252,6 +279,7 @@ impl Controller {
         if self.ground_pick.is_some() {
             return Err("a ground pick is running");
         }
+        self.select(Net::Roulade);
         self.roulade = Some(self.skills.roulade_duration);
         self.roulade_chain = 0.0;
         Ok(true)
@@ -265,6 +293,7 @@ impl Controller {
                 if !self.policy.has_sitstand() {
                     return Err("no sitstand policy loaded");
                 }
+                self.select(Net::SitStand);
                 self.sit = Sit::Sitting;
                 Ok("sit")
             }
@@ -282,12 +311,14 @@ impl Controller {
     /// seconds, then cut torque and power off); this just puts the sitstand network in
     /// charge with the posture flag at 1.
     pub fn begin_shutdown_sit(&mut self) {
+        self.select(Net::SitStand);
         self.sit = Sit::Sitting;
     }
 
     /// Seated boot: the robot powered on already sitting, so rise via the sitstand network
     /// instead of dragging the legs through a linear ramp to the standing pose.
     pub fn begin_boot_rise(&mut self) {
+        self.select(Net::SitStand);
         self.sit = Sit::Rising {
             remaining: RISE_SECS,
         };
@@ -295,9 +326,7 @@ impl Controller {
 
     /// One tick.
     ///
-    /// `body_active` says a client is holding the body-pose mode: the twist is zeroed and
-    /// the standing network drives (by magnitude where it is selectable, forced where it is
-    /// reserved), exactly as the prototype's B-button mode behaves.
+    /// `body_active` zeroes the twist without changing the selected network.
     ///
     /// `scale_mult` multiplies the action scale — voltage adaptation, 1.0 when off.
     pub fn step(
@@ -308,9 +337,7 @@ impl Controller {
         dt: f64,
         scale_mult: f64,
     ) -> Result<Step, PolicyError> {
-        // Expire windows first, so a tick after the deadline runs the next thing rather
-        // than one more frame of a finished move — the prototype checks its timers at the
-        // same point relative to inference.
+        // Expire trigger windows without changing the selected model.
         if let Some((_, remaining)) = self.kick
             && remaining <= 0.0
         {
@@ -318,7 +345,7 @@ impl Controller {
         }
         // The end of a roll is a fork, as the prototype forks it: the button still held
         // (a request landed within the chain window) restarts the window — the policy
-        // re-initiates a roll from wherever it landed — and released hands back.
+        // re-initiates a roll from wherever it landed — and release only ends the window.
         if let Some(remaining) = self.roulade
             && remaining <= 0.0
         {
@@ -334,52 +361,55 @@ impl Controller {
             self.sit = Sit::Up;
         }
 
-        // Re-encode the command for the active skill and pick the network. The priority
-        // chain is the prototype's: roulade > kick > ground pick > sit/rise > stand > walk.
-        let (net, effective, label) = if self.roulade.is_some() {
-            // Trained with every command slot at zero; it rolls as soon as it is switched
-            // in, so being selected IS the trigger.
-            (Net::Roulade, Command::default(), "roulade")
-        } else if let Some((left, _)) = self.kick {
-            // The kick networks are trained with every command slot at zero — head and
-            // body included, whatever the client is holding.
-            let net = if left { Net::KickLeft } else { Net::KickRight };
-            let label = if left { "kick_left" } else { "kick_right" };
-            (net, Command::default(), label)
-        } else if let Some(phase) = self.ground_pick {
-            // The twist slots carry the phase encoding; head and body are zero-padded,
-            // mirroring the training env's `zero_command_padding`.
-            let angle = std::f64::consts::TAU * phase;
-            let c = Command {
-                twist: [angle.cos(), angle.sin(), 0.0],
-                ..Command::default()
-            };
-            (Net::GroundPick, c, "ground_pick")
-        } else {
-            let mut c = *command;
-            match self.sit {
-                // The posture flag rides the twist vx slot: 1 = sit, 0 = stand. Head and
-                // body slots stay live — the prototype keeps them in the buffer too.
-                Sit::Sitting => {
-                    c.twist = [1.0, 0.0, 0.0];
-                    (Net::SitStand, c, "sit")
-                }
-                Sit::Rising { .. } => {
-                    c.twist = [0.0; 3];
-                    (Net::SitStand, c, "rise")
-                }
-                Sit::Up => {
-                    if body_active {
+        let net = self.net;
+        let (effective, label) = match net {
+            Net::Roulade => {
+                // Trained with every command slot at zero; it rolls as soon as it is switched
+                // in, so being selected IS the trigger.
+                (Command::default(), "roulade")
+            }
+            Net::KickLeft | Net::KickRight => {
+                // The kick networks are trained with every command slot at zero — head and
+                // body included, whatever the client is holding.
+                let label = if net == Net::KickLeft {
+                    "kick_left"
+                } else {
+                    "kick_right"
+                };
+                (Command::default(), label)
+            }
+            Net::GroundPick => {
+                // The twist slots carry the phase encoding; head and body are zero-padded,
+                // mirroring the training env's `zero_command_padding`.
+                let angle =
+                    std::f64::consts::TAU * self.ground_pick.unwrap_or(GROUND_PICK_END_PHASE);
+                let c = Command {
+                    twist: [angle.cos(), angle.sin(), 0.0],
+                    ..Command::default()
+                };
+                (c, "ground_pick")
+            }
+            Net::SitStand => {
+                let mut c = *command;
+                match self.sit {
+                    // The posture flag rides the twist vx slot: 1 = sit, 0 = stand. Head and
+                    // body slots stay live — the prototype keeps them in the buffer too.
+                    Sit::Sitting => {
+                        c.twist = [1.0, 0.0, 0.0];
+                        (c, "sit")
+                    }
+                    Sit::Rising { .. } | Sit::Up => {
                         c.twist = [0.0; 3];
-                    }
-                    let standing = self.policy.will_stand(c.twist_magnitude())
-                        || (body_active && self.policy.has_standing());
-                    if standing {
-                        (Net::Stand, c, "stand")
-                    } else {
-                        (Net::Walk, c, "walk")
+                        (c, "rise")
                     }
                 }
+            }
+            Net::Stand | Net::Walk => {
+                let mut c = *command;
+                if body_active || net == Net::Stand {
+                    c.twist = [0.0; 3];
+                }
+                (c, if net == Net::Stand { "stand" } else { "walk" })
             }
         };
 
