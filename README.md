@@ -252,6 +252,11 @@ sudo systemctl start robotd
 sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py
 ```
 
+启动脚本前托住机器人：脚本先关闭策略，通过 `robot.init` 在约 2 秒内平滑回到 stand
+（HOME 固定站姿），等待 Enter。当前部署配置只加载 walk，按 Enter 后零速度也运行 walk；
+再次按 Enter 停止模型并回到 stand，保持力矩。此配置下 T/G/Z/V/X 的动作模型未启用。
+修改后需同时上传脚本和 `deploy/robotd.toml` 并重启 `robotd`；该模型配置也适用于手柄。
+
 | 键盘 | 对应手柄 | 功能 |
 | --- | --- | --- |
 | Enter | Start | 开启 / 关闭运动策略，由 `robotd` 切换实际状态；关闭策略不卸力 |
@@ -264,7 +269,7 @@ sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py
 | X | X | 前滚翻，长按连续翻滚 |
 | R / F | RT / LT | 张嘴；R 触发叫声，F 按住播放 wheee；松开后关闭 |
 | M 长按 3 秒 | 方向键上长按 | 请求切换步行 / 轮式；方向键的速度调整方式不变 |
-| P 长按 2 秒 | Select 长按 | 请求坐下并关机，退出键盘控制后由 `robotd` 完成关机流程 |
+| P 长按 2 秒 | Select 长按 | 请求关机；当前仅 walk 配置会直接卸力，请先托住机器人 |
 | 空格 | — | 速度归零、姿态目标归零，并释放嘴部、声音和连续翻滚输入 |
 | C | — | 开始 / 停止电流 CSV 记录 |
 | H | — | 开启 / 关闭行走发声；R/F 手动发声期间暂停自动语音 |
