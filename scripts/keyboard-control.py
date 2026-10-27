@@ -259,7 +259,7 @@ class RobotdDiagnostics:
         if not isinstance(state, dict):
             raise ValueError("robotd 状态帧格式错误")
         self._state = (state, time.monotonic())
-        if self.last_error == "robotd 未连接":
+        if self.last_error == "robotd 未连接，按 ENTER，启动 DUCK":
             self.last_error = self._shown_error = ""
         safety = state.get("safety", {})
         fall = safety.get("fall") or {}
@@ -361,7 +361,7 @@ class RobotdDiagnostics:
         if "standup" in lower and any(word in lower for word in ("未完成", "未收到", "timeout", "timed out")):
             return "起身未完成，按 Enter 重试"
         if any(word in lower for word in ("实时状态未连接", "通信中断", "robotd 未连接", "状态流已断开")):
-            return "robotd 未连接"
+            return "robotd 未连接，按 ENTER，启动 DUCK"
         if "journalctl" in lower or "无法读取 robotd 日志" in message:
             return "robotd 日志不可用"
         return None
@@ -369,7 +369,7 @@ class RobotdDiagnostics:
     def brief_status(self, enabled):
         state, received = self._state
         if state is None:
-            status = "robotd 未连接，按 Enter 重启"
+            status = "robotd 未连接，按 ENTER，启动 DUCK"
         elif time.monotonic() - received > 1.0:
             status = "机器人状态更新中断"
         else:
@@ -403,7 +403,7 @@ class RobotdDiagnostics:
                     "sit": "坐姿中", "rise": "起身中",
                     "kick_left": "左踢腿中", "kick_right": "右踢腿中",
                     "ground_pick": "拾取中", "roulade": "翻滚中",
-                    "held": "控制暂停" if enabled else "未启用，按 Enter 起身",
+                    "held": "控制暂停" if enabled else "未启用，按 ENTER，启动 DUCK",
                 }.get(policy, "动作执行中")
         return self.last_error or status
 
@@ -417,7 +417,7 @@ class RobotdDiagnostics:
             brief = summary or self.brief_error(message)
             if brief == "robotd 正在启动":
                 fault = False
-            elif brief == "robotd 未连接" and self.last_error:
+            elif brief == "robotd 未连接，按 ENTER，启动 DUCK" and self.last_error:
                 pass
             elif brief == "电机通信异常" and re.match(r"\d+ 电机", self.last_error):
                 pass
