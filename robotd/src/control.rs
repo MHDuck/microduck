@@ -215,6 +215,15 @@ impl Controller {
         }
     }
 
+    pub fn stand_up(&mut self) -> Result<(), &'static str> {
+        if !self.policy.has_standing() {
+            return Err("no stand-up policy loaded");
+        }
+        self.select(Net::Stand);
+        self.reset();
+        Ok(())
+    }
+
     pub fn has_sitstand(&self) -> bool {
         self.policy.has_sitstand()
     }

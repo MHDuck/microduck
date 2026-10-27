@@ -4204,6 +4204,7 @@ mod tests {
                 limp: false,
                 gravity: [0.0, 0.0, -1.0],
                 gain: Some(32),
+                fall: None,
             },
             control_loop: proto::LoopState {
                 hz: 50.0,

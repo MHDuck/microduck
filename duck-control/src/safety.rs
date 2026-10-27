@@ -19,8 +19,8 @@
 //! is the safe state for a biped; losing balance is a different event, and it is not this
 //! layer's to answer.
 //!
-//! Enabled fall/overcurrent protections latch a torque-off until this Safety is recreated.
-//! Both `apply` and `set_torque` enforce the latch, including during homing and recovery.
+//! Overcurrent latches until restart; explicit bounded stand-up may release a fall latch.
+//! Both `apply` and `set_torque` enforce any remaining latch.
 //! With fall protection disabled, `fallen` remains a report for the optional limp-fall mode.
 
 use std::time::Duration;
@@ -112,6 +112,7 @@ pub struct Safety<T: RobotIo, U: ImuIo> {
     /// How long gravity has been past the threshold. Reset by any upright sample.
     falling_for: Duration,
     fallen: bool,
+    fall_recovery: bool,
     overcurrent_ticks: u32,
     protection: Option<Limit>,
     protection_torque_off: bool,
@@ -128,6 +129,7 @@ impl<T: RobotIo, U: ImuIo> Safety<T, U> {
             config,
             falling_for: Duration::ZERO,
             fallen: false,
+            fall_recovery: false,
             overcurrent_ticks: 0,
             protection: None,
             protection_torque_off: false,
@@ -164,6 +166,21 @@ impl<T: RobotIo, U: ImuIo> Safety<T, U> {
 
     pub fn protection(&self) -> Option<Limit> {
         self.protection
+    }
+
+    pub fn begin_fall_recovery(&mut self) -> Result<(), &'static str> {
+        if self.protection == Some(Limit::Overcurrent) {
+            return Err("overcurrent protection latched; clear the fault and restart robotd");
+        }
+        self.protection = None;
+        self.protection_torque_off = false;
+        self.fall_recovery = true;
+        Ok(())
+    }
+
+    pub fn end_fall_recovery(&mut self) {
+        self.fall_recovery = false;
+        self.falling_for = Duration::ZERO;
     }
 
     /// Retry failed torque-off writes even when there are no fresh sensor samples.
@@ -256,6 +273,10 @@ impl<T: RobotIo, U: ImuIo> Safety<T, U> {
         self.gain
     }
 
+    pub fn fall_elapsed(&self) -> Duration {
+        self.falling_for
+    }
+
     /// Update fall state from a fresh sample. Call every tick, before [`Self::apply`].
     ///
     /// Debounced in both directions: a robot has to be down for `fall_debounce` to count as
@@ -289,15 +310,47 @@ impl<T: RobotIo, U: ImuIo> Safety<T, U> {
 
         let down = sensors.imu.gravity[2] > self.config.fall_gravity_z;
         if down {
+            let previous = self.falling_for;
             self.falling_for = self.falling_for.saturating_add(dt);
             if self.falling_for >= self.config.fall_debounce {
+                if !self.fallen {
+                    tracing::warn!(
+                        gravity_z = sensors.imu.gravity[2],
+                        elapsed_ms = self.falling_for.as_millis(),
+                        fall_protection = self.config.fall_protection,
+                        standup_recovery = self.fall_recovery,
+                        "fall detected"
+                    );
+                }
                 self.fallen = true;
+            } else if previous.is_zero() || self.falling_for.as_secs() > previous.as_secs() {
+                tracing::warn!(
+                    gravity_z = sensors.imu.gravity[2],
+                    threshold_z = self.config.fall_gravity_z,
+                    elapsed_ms = self.falling_for.as_millis(),
+                    required_ms = self.config.fall_debounce.as_millis(),
+                    fall_protection = self.config.fall_protection,
+                    standup_recovery = self.fall_recovery,
+                    "fall pending"
+                );
             }
         } else {
+            if !self.falling_for.is_zero() || self.fallen {
+                tracing::warn!(
+                    gravity_z = sensors.imu.gravity[2],
+                    elapsed_ms = self.falling_for.as_millis(),
+                    protection = ?self.protection,
+                    "fall angle recovered; timer reset"
+                );
+            }
             self.falling_for = Duration::ZERO;
             self.fallen = false;
         }
-        if self.config.fall_protection && self.fallen && self.protection.is_none() {
+        if self.config.fall_protection
+            && !self.fall_recovery
+            && self.fallen
+            && self.protection.is_none()
+        {
             self.protection = Some(Limit::FallProtection);
             tracing::error!(gravity_z = sensors.imu.gravity[2],
                 "fall protection latched; restart robotd after standing the robot upright");

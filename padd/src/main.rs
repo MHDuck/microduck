@@ -365,6 +365,7 @@ fn main() -> std::process::ExitCode {
             let call = proto::Call::RobotEnable(proto::EnableParams {
                 on: false,
                 toggle: true,
+                stand_up: false,
             });
             match request(&mut stream, &mut next_id, &call) {
                 Err(e) => {

@@ -34,6 +34,7 @@ const THEREMIN_UP: u8 = 1;
 const THEREMIN_DOWN: u8 = 2;
 const POWER_INIT: u8 = 1;
 const POWER_RELAX: u8 = 2;
+const POWER_STAND_UP: u8 = 3;
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
@@ -178,6 +179,7 @@ pub struct Intents {
 pub enum PowerRequest {
     /// Torque on, ramp to the home pose.
     Init,
+    StandUp,
     /// Torque off. The robot collapses if nothing holds it.
     Relax,
 }
@@ -393,6 +395,10 @@ impl Intents {
         self.power.store(POWER_INIT, Ordering::Relaxed);
     }
 
+    pub fn request_stand_up(&self) {
+        self.power.store(POWER_STAND_UP, Ordering::Relaxed);
+    }
+
     /// Ask the loop to cut power to the joints.
     ///
     /// Also clears `enabled`: a robot that has been asked to go limp is not one the policy should
@@ -471,6 +477,7 @@ impl Intents {
         match self.power.swap(POWER_NONE, Ordering::Relaxed) {
             POWER_INIT => Some(PowerRequest::Init),
             POWER_RELAX => Some(PowerRequest::Relax),
+            POWER_STAND_UP => Some(PowerRequest::StandUp),
             _ => None,
         }
     }

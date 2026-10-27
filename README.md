@@ -160,9 +160,11 @@ sh xh_push.sh radxa@192.168.2.90
 
 上传入口为仓库根目录的 [xh_push.sh](xh_push.sh)。`bash build.sh` 生成 `target/native/aarch64-unknown-linux-gnu/release/robotd`；已有最新编译产物时，可直接执行上传命令。
 
-上传脚本下发 `robotd`、`policies/*.onnx`、控制 / 诊断脚本与 `deploy/robotd.toml`，校验程序和配置的 SHA-256，并重启 `robotd`。不带 `--build` 的 `xh_push.sh` 不会自动编译，所以源码更新后先执行上面的 `bash build.sh`。
+上传脚本下发 `robotd`、`policies/*.onnx`、控制 / 诊断脚本与 `deploy/robotd.toml`，校验 robotd、键盘脚本和配置的 SHA-256，并重启 `robotd`。不带 `--build` 的 `xh_push.sh` 不会自动编译，所以 Rust 源码更新后先执行上面的 `bash build.sh`；只修改 Python 控制界面时不需要重新编译 robotd。
 
 **上传会覆盖板端 `/etc/robot/robotd.toml`。** 板端调试后的参数应先同步回本地配置。后续更新程序或模型也使用上述命令。
+
+上传前先托住机器人并退出旧 keycontrol；上传后重新运行键盘脚本。重启 robotd 不会让已经运行的 Python 进程加载新版界面。
 
 ### 4.5 保护 TF 卡上的引导配置
 
@@ -248,30 +250,50 @@ robotctl pad status
 
 ```bash
 sudo systemctl stop padd
-sudo systemctl start robotd
 sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py
 ```
 
-启动脚本前托住机器人：脚本先关闭策略，通过 `robot.init` 在约 2 秒内平滑回到 stand
-（HOME 固定站姿），等待 Enter。当前部署配置只加载 walk，按 Enter 后零速度也运行 walk；
-再次按 Enter 停止模型并回到 stand，保持力矩。此配置下 T/G/Z/V/X 的动作模型未启用。
-修改后需同时上传脚本和 `deploy/robotd.toml` 并重启 `robotd`；该模型配置也适用于手柄。
+Enter 每次都会执行 `systemctl restart robotd`，重连并等待模型、IMU 就绪，再调用
+`policy.stand` 指定的 StandUp 模型从倒地姿态起身；当前为 `standup_hd1910_v6.onnx`。
+服务未启动、行走摔倒无法恢复，或倾倒 / 过流保护导致舵机失能时，排除故障并准备好起身空间后，均可按 Enter 重新走这套流程；已经站稳时也会重启。
+起身直接运行 StandUp，不经过 HOME 或 SitStand。起身期间速度归零，暂缓倾倒锁定和
+预测降力，过流保护仍按配置执行。完成判定为 IMU 就绪、读取成功且样本更新，重力 `z < -0.9`、角速度模长 `< 1 rad/s` 的有效样本累计达到 500 ms。
+重复样本暂停计时，新的不稳定样本或 IMU 未就绪会清零；不要求学习到的站姿与 HOME 关节角一致。键盘端收到 `standup` 转为 `stand` 后提示“起身完成，可继续行走”。
+12 秒未完成则卸力，失败后可再次按 Enter。服务未启动时也可先运行脚本，再按 Enter 恢复。
+首次从旧版本升级到 Enter 起身和实时保护状态功能时，需同时部署配套 `robotd` 二进制与键盘脚本；后续仅调整界面文字时更新脚本即可。
+自定义 `--socket` 只请求 StandUp，不操作默认 systemd 服务。
+
+主界面只显示一条简短状态或故障，不拼接键盘、语音开关或其他字段，例如“站立中”“行走中”“倾倒中”“倒地中”“倾倒保护了”、
+“22 电机无响应”“BNO085 连接异常”“ONNX 文件缺失”“配置文件错误”。电机编号只在错误提供编号时显示。
+指令速度也只在 C 日志里显示，主界面不显示 `v=...`、`IMU新/重复`、`z=...` 或保护计时。
+故障优先显示，Enter 恢复成功后清除；通信断开时停止发送运动指令，保留界面等待 Enter 重试。
+上传后须退出旧键盘进程并重新运行，已有 Python 进程不会自动加载新脚本；`xh_push.sh` 会核验板端脚本的 SHA-256。
+另外始终通过独立只读连接以 10 Hz 订阅 `robot.state`，每秒读取 `robot.health`，不依赖日志或 C。
+按 C 打开详细日志，显示速度、实际策略、IMU 就绪/新鲜度、重力 z、倾倒配置及计时、电流和原始错误；
+同时回放最近 100 条诊断消息，连接正常时开始电流 CSV 记录。再次按 C 关闭详情和记录，返回简洁界面。
+CSV 默认保存到当前工作目录的 `logs/`，可用 `--log-dir` 修改；CSV 保存电流、策略与指令速度等采样数据，不包含终端的原始错误日志。C 不改变运动指令，停车仍需按空格。
+Enter 重启会结束当前 CSV 记录；恢复后如果 C 详情仍开启，先按 C 关闭，再按 C 开启新记录。
+robotd 未连接时也能按 C 查看错误；状态流断开或超过 1 秒未更新会显示简短提示，重启后自动重连。
+日志跟随进程随键盘脚本退出；自定义 socket 同样订阅实时状态，但不读取默认服务日志。
+倾倒配置、超限计时、倒地确认、倾角恢复和预测降力过程的原始详情只在 C 日志中显示。
+`fall_debounce_ms = 5000` 表示超限累计达到 5 秒才确认倒地；恢复到角度阈值内会清零计时。
+“确认倒地”与“保护锁定”分别提示，只有锁定触发才代表已请求全身卸力。
 
 | 键盘 | 对应手柄 | 功能 |
 | --- | --- | --- |
-| Enter | Start | 开启 / 关闭运动策略，由 `robotd` 切换实际状态；关闭策略不卸力 |
+| Enter | — | 重启 robotd 并调用 StandUp 起身，成功后允许行走 |
 | W / S、A / D | 左摇杆 | 行走模式下增减前后 / 横移速度，每次 0.10 m/s，范围 ±0.40 m/s；松开保持 |
 | Q / E | 右摇杆左右 | 保留左右转向，松开约 0.3 秒停止转向 |
-| T | 方向键下 | 坐下 / 站起，保留之后 5 秒的关节位置打印 |
+| T | 方向键下 | 启用后的坐下 / 站起切换；先归零速度，不打印关节位置日志 |
 | Y / B | Y / B | 切换头部 / 身体姿态模式，再按同键返回行走；切换时速度归零 |
 | G | A | 地面拾取（A 保留给方向控制） |
 | Z / V | LB / RB | 左 / 右踢腿 |
 | X | X | 前滚翻，长按连续翻滚 |
 | R / F | RT / LT | 张嘴；R 触发叫声，F 按住播放 wheee；松开后关闭 |
 | M 长按 3 秒 | 方向键上长按 | 请求切换步行 / 轮式；方向键的速度调整方式不变 |
-| P 长按 2 秒 | Select 长按 | 请求关机；当前仅 walk 配置会直接卸力，请先托住机器人 |
+| P 长按 2 秒 | Select 长按 | 请求坐下并关机；无法执行坐下时直接卸力，请先托住机器人 |
 | 空格 | — | 速度归零、姿态目标归零，并释放嘴部、声音和连续翻滚输入 |
-| C | — | 开始 / 停止电流 CSV 记录 |
+| C | — | 打开 / 关闭详细日志，同时开始 / 停止电流 CSV 记录 |
 | H | — | 开启 / 关闭行走发声；R/F 手动发声期间暂停自动语音 |
 | Esc / Ctrl-C | — | 退出并卸力；默认连接下还会停止 `robotd`，退出前应托住机器人 |
 
@@ -283,6 +305,7 @@ sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py
 终端没有按键松开事件，脚本通过按键重复估算长按；R/F/X 松开约 0.3 秒释放，
 Enter、Y/B、T、G、Z/V、C、H 两次点按需间隔 1 秒以上，以免长按被当成反复切换。
 M/P 单次长按只触发一次。动作缺少模型时显示拒绝原因，保留键盘会话。
+T 使用 `policy.sitstand`（当前为 `sitstand_v3.onnx`），不重启 robotd，也不代替 Enter 的倒地自主起身。
 先停 `padd` 是为了避免手柄与键盘争抢指令；恢复手柄控制时执行 `sudo systemctl start robotd padd`。
 
 `--walk-voice` 可在启动时开启行走发声，`--voice-sound-only` 关闭自动语音的嘴部动画，
@@ -300,9 +323,27 @@ sudo systemctl start robotd padd
 
 <a id="飞特分支倾倒保护与电流保护"></a>
 
-运行时提供倾倒和过流锁定停机功能，但当前 [deploy/robotd.toml](deploy/robotd.toml) 中 `fall_protection` 与 `overcurrent_protection` **均为 `false`**。该设置与独立的 `limp_fall` 降增益逻辑不同。
+当前仓库的 [deploy/robotd.toml](deploy/robotd.toml) 中，`fall_protection = true`、`fall_gravity_z = -0.5`、`fall_debounce_ms = 5000`；`overcurrent_protection = false`。板端以 `/etc/robot/robotd.toml` 为准，实际生效的倾倒开关与计时可在 C 日志中查看。
 
-启用锁定停机后，保护触发会关闭舵机力矩；需要支撑并扶正机器人、排除故障，再重启 `robotd`。过流判断使用舵机供电电流估算，阈值需要结合实际电源和负载标定。独立舵机调试工具不经过 `robotd` 的这套保护。
+| 机制 | 判定和动作 |
+| --- | --- |
+| 倾倒锁定 | IMU 就绪且有新样本时，机身重力 `z > fall_gravity_z` 累计达到 `fall_debounce_ms`，确认倒地；开启 `fall_protection` 后锁定并请求全身卸力。扶正不会自动解除已锁定的保护 |
+| 预测倾倒降力 | 仅在 `fall_protection = false` 且 `limp_fall = true`、策略处于可触发状态时运行。使用 IMU 重力和角速度预测继续倾倒，先降低增益；落地稳定或降力超时后回 HOME，再交回策略，不是锁定卸力 |
+| 过流锁定 | 开启 `overcurrent_protection` 后，使用舵机供电电流估算和连续拍数确认，触发后锁定并请求卸力；当前阈值配置为 18 A、连续 2 拍，但开关关闭，不执行这项锁定 |
+
+倾倒计时遇到新的正常角度样本会清零；IMU 未就绪也清零，重复样本暂停累计。因此“5 秒”是有效采样时间的累计，存在重复或缺失样本时，实际等待时间可能更长。未到阈值时主界面显示“倾倒中”；“倒地中”表示倒地判定，“倾倒保护了”才表示锁定触发。
+
+要把倾倒锁定的确认时间设为 5 秒或 10 秒，修改配置中已有 `[safety]` 段的这一项，不要重复添加段：
+
+```toml
+fall_debounce_ms = 5000  # 5 秒；改为 10000 即 10 秒
+```
+
+同步到板端配置后，排除故障并准备好起身空间，按 Enter 重启 robotd 并调用 StandUp；重启后新配置生效。使用 `xh_push.sh` 更新时，应先修改本地 `deploy/robotd.toml`，避免上传覆盖板端调整。
+
+预测降力使用另外一组参数：默认已倾斜到 `z > -0.90`，且继续倾倒、预测 300 ms 后 `z > -0.5`，累计满足 60 ms 后触发。`limp_fall_debounce_ms` 是预测触发确认时间，`limp_fall_max_ms` 是降力最长时间（默认 1500 ms），都不等于 `fall_debounce_ms`。当前开启倾倒锁定，所以这条预测降力流程不运行。
+
+过流阈值需结合实际电源和负载标定。独立舵机调试工具不经过 robotd 的这套保护。
 
 ## 6. 仓库结构与文档
 

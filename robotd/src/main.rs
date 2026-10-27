@@ -1478,6 +1478,15 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
         },
     );
 
+    tracing::warn!(
+        fall_protection = params.safety.fall_protection,
+        fall_gravity_z = params.safety.fall_gravity_z,
+        fall_debounce_ms = params.safety.fall_debounce_ms,
+        limp_fall_active = params.safety.limp_fall && !params.safety.fall_protection,
+        overcurrent_protection = params.safety.overcurrent_protection,
+        "fall protection settings"
+    );
+
     let Some(mut hold) = adopt_startup_pose(&mut safety, &state, period).await else {
         return;
     };
@@ -1596,6 +1605,8 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
     let limp_fall_max = Duration::from_millis(params.safety.limp_fall_max_ms);
     let limp_fall_pose = Duration::from_millis(params.safety.limp_fall_pose_ms);
     let mut limp_fall = LimpFall::Idle;
+    let mut stand_up_until: Option<Instant> = None;
+    let mut stand_up_upright = Duration::ZERO;
 
     // The voice, and the ear. Both optional equipment: a robot without a codec or a bank
     // walks identically — the player degrades to a debug line, and the mic worker is only
@@ -1733,6 +1744,83 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
         // know where the joints have moved to.
         let sensors = coast.sample(fresh);
 
+        let mut power_request = intents.take_power_request();
+        if power_request == Some(intents::PowerRequest::StandUp) {
+            power_request = None;
+            let result = if powered_off || shutdown_sit.is_some() || mode_change.is_some() {
+                Err("shutdown or mode switch in progress")
+            } else if !safety.imu_ready() || imu_read_errors != 0 || fresh.is_none() {
+                Err("stand-up requires fresh sensors and a ready IMU")
+            } else {
+                controller
+                    .as_mut()
+                    .ok_or("no policy loaded")
+                    .and_then(|c| c.stand_up())
+                    .and_then(|_| safety.begin_fall_recovery())
+            };
+            match result {
+                Ok(()) => {
+                    intents.stop();
+                    intents.set_enabled(true);
+                    stand_up_until = Some(tick_start + Duration::from_secs(12));
+                    stand_up_upright = Duration::ZERO;
+                    seated_boot = false;
+                    bringup = Bringup::Limp;
+                    limp_fall = LimpFall::Idle;
+                    falling.reset();
+                    twist_ema = [0.0; 3];
+                    head_ema = [0.0; 4];
+                    body_ema = [0.0; 3];
+                    tracing::warn!(
+                        "stand-up recovery started; overcurrent protection remains active"
+                    );
+                }
+                Err(reason) => tracing::warn!(reason, "stand-up refused"),
+            }
+        }
+
+        if let Some(deadline) = stand_up_until {
+            if !was_driving || !safety.imu_ready() {
+                stand_up_upright = Duration::ZERO;
+            } else if imu_read_errors == 0
+                && safety.imu_stale().run == 0
+                && let Some(sensors) = fresh.as_ref()
+            {
+                // Repeated IMU samples pause the timer; learned stance need not match HOME.
+                let upright = sensors.imu.gravity[2] < -0.9
+                    && sensors.imu.gyro.iter().map(|w| w * w).sum::<f64>() < 1.0;
+                stand_up_upright = if upright {
+                    stand_up_upright + period
+                } else {
+                    Duration::ZERO
+                };
+            }
+            let cancelled = !intents.enabled()
+                || power_request.is_some()
+                || shutdown_sit.is_some()
+                || powered_off
+                || safety.protection().is_some();
+            let complete = stand_up_upright >= Duration::from_millis(500);
+            if tick_start >= deadline && !complete && !cancelled {
+                intents.set_enabled(false);
+                power_request = Some(intents::PowerRequest::Relax);
+                tracing::error!(
+                    gravity_z = last_imu.gravity[2],
+                    angular_speed = last_imu.gyro.iter().map(|w| w * w).sum::<f64>().sqrt(),
+                    upright_ms = stand_up_upright.as_millis(),
+                    imu_ready = safety.imu_ready(),
+                    imu_stale_run = safety.imu_stale().run,
+                    imu_read_errors,
+                    "stand-up timed out; cutting torque"
+                );
+            }
+            if complete || cancelled || tick_start >= deadline {
+                stand_up_until = None;
+                safety.end_fall_recovery();
+                tracing::warn!(complete, cancelled, "stand-up recovery ended");
+            }
+        }
+
         if let Some(fresh) = fresh.as_ref() {
             if imu_read_errors == 0 {
                 safety.observe(fresh, period);
@@ -1748,14 +1836,17 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
         state.fallen.store(safety.fallen(), Ordering::Relaxed);
 
         let protection = safety.protection();
+        state
+            .protection_latched
+            .store(protection.is_some(), Ordering::Relaxed);
         if protection.is_some() {
-            state.protection_latched.store(true, Ordering::Relaxed);
             if let Err(e) = safety.enforce_protection() {
                 tracing::error!(error = %e, "protection torque-off failed; retrying next tick");
             }
             intents.set_enabled(false);
             intents.stop();
             intents.take_power_request();
+            power_request = None;
             intents.take_skills();
             intents.take_mode_switch();
             bringup = Bringup::Limp;
@@ -1767,6 +1858,10 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
             twist_ema = [0.0; 3];
         }
         let mut snapshot = intents.snapshot();
+        if stand_up_until.is_some() {
+            snapshot.command = PolicyCommand::default();
+            snapshot.pose.active = false;
+        }
         if protection.is_some() {
             snapshot.enabled = false;
             snapshot.command.twist = [0.0; 3];
@@ -1776,10 +1871,11 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
         limits.extend(protection);
 
         if let Some(controller) = controller.as_mut() {
-            if snapshot.enabled && !was_enabled {
+            if snapshot.enabled && !was_enabled && stand_up_until.is_none() {
                 controller.enable();
             }
             if snapshot.enabled
+                && stand_up_until.is_none()
                 && !snapshot.pose.active
                 && gated.twist != [0.0; 3]
                 && shutdown_sit.is_none()
@@ -1794,7 +1890,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
         // Before the enable-driven bring-up below, so a `relax` that arrives in the same tick as a
         // still-set `enabled` flag wins — `request_relax` clears that flag, and reading the request
         // first means the order cannot invert.
-        match intents.take_power_request() {
+        match power_request {
             Some(intents::PowerRequest::Init) => match (bringup, sensors.as_ref()) {
                 // Unlike `enable`, this needs no policy: "stand up" is a reasonable thing to ask of
                 // a robot with no walking network at all, and it is what a bench robot needs before
@@ -1852,7 +1948,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                     tracing::warn!(error = %e, "cannot cut torque; the robot is still powered")
                 }
             },
-            None => {}
+            Some(intents::PowerRequest::StandUp) | None => {}
         }
 
         // One-shot skill requests, taken once per tick like the power request. They need a
@@ -1861,7 +1957,10 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
         if requests.any() {
             match controller.as_mut() {
                 Some(controller)
-                    if snapshot.enabled && bringup == Bringup::Ready && shutdown_sit.is_none() =>
+                    if snapshot.enabled
+                        && bringup == Bringup::Ready
+                        && shutdown_sit.is_none()
+                        && stand_up_until.is_none() =>
                 {
                     let outcome = |what: &str, result: Result<(), &'static str>| match result {
                         Ok(()) => tracing::warn!(skill = what, "skill started"),
@@ -1878,7 +1977,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                     }
                     if requests.sit_toggle {
                         match controller.sit_toggle() {
-                            Ok(direction) => tracing::warn!(direction, "sit toggle"),
+                            Ok(_) => {}
                             Err(reason) => tracing::warn!(reason, "sit toggle refused"),
                         }
                     }
@@ -1957,6 +2056,8 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                 );
             } else if mode_change.is_some() {
                 tracing::warn!(mode = target.as_str(), "a mode switch is already in flight");
+            } else if stand_up_until.is_some() {
+                tracing::warn!("mode switch refused during stand-up recovery");
             } else {
                 tracing::warn!(
                     from = policy_params.mode.as_str(),
@@ -2048,7 +2149,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
         // the whole sequence, so the controller is not stepped and the targets below come
         // from this block. Nothing in `safety` needs telling: the fall verdict gates
         // nothing, so the pose ramp moves a robot lying on the floor like any other tick.
-        if params.safety.limp_fall && !params.safety.fall_protection {
+        if params.safety.limp_fall && !params.safety.fall_protection && stand_up_until.is_none() {
             // Abandoned mid-sequence: someone cut the torque, disabled the policy, or the
             // shutdown sit started. Whatever took over owns the robot now — drop out rather
             // than finishing a pose ramp nobody asked for, and hold where the robot is
@@ -2211,7 +2312,9 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                 .and_then(|_| safety.set_torque(true))
             {
                 Ok(()) => {
-                    if seated_boot && controller.as_ref().is_some_and(|c| c.has_sitstand()) {
+                    if stand_up_until.is_some() {
+                        bringup = Bringup::Ready;
+                    } else if seated_boot && controller.as_ref().is_some_and(|c| c.has_sitstand()) {
                         // Seated boot: hold the seat and rise via the sitstand network —
                         // the linear ramp would drag folded legs sideways through the floor.
                         seated_boot = false;
@@ -2384,8 +2487,12 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                         step.targets,
                         step.gain,
                         // A scripted move is motion whatever the twist says; so is walking.
-                        step.busy || command.twist_magnitude() > 0.0,
-                        step.label,
+                        stand_up_until.is_some() || step.busy || command.twist_magnitude() > 0.0,
+                        if stand_up_until.is_some() {
+                            "standup"
+                        } else {
+                            step.label
+                        },
                     ),
                     Err(e) => {
                         tracing::warn!(error = %e, "inference failed; holding");
@@ -2648,6 +2755,18 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                     limp: matches!(limp_fall, LimpFall::Limp { .. }),
                     gravity: sensors.imu.gravity,
                     gain: safety.gain(),
+                    fall: Some(proto::FallStatus {
+                        protection_enabled: params.safety.fall_protection,
+                        gravity_z_threshold: params.safety.fall_gravity_z,
+                        debounce_ms: params.safety.fall_debounce_ms,
+                        elapsed_ms: safety.fall_elapsed().as_millis() as u64,
+                        recovery_active: stand_up_until.is_some(),
+                        limp_enabled: params.safety.limp_fall && !params.safety.fall_protection,
+                        imu_ready: safety.imu_ready(),
+                        imu_fresh: fresh.is_some()
+                            && imu_read_errors == 0
+                            && safety.imu_stale().run == 0,
+                    }),
                 },
                 control_loop: proto::LoopState {
                     hz: f64::from_bits(state.achieved_hz.load(Ordering::Relaxed)),
@@ -3386,6 +3505,19 @@ fn dispatch(
         // A refusal here is a normal answer with a reason, not an error: the client asked
         // something reasonable and the daemon declined.
         proto::Call::RobotEnable(p) => {
+            if p.stand_up {
+                let result = if !p.on || p.toggle {
+                    proto::IntentResult::refused("stand_up requires on=true and toggle=false")
+                } else if state.policies.load().stand.is_none()
+                    || state.policy_error.load().is_some()
+                {
+                    proto::IntentResult::refused("no stand-up policy loaded")
+                } else {
+                    intents.request_stand_up();
+                    proto::IntentResult::accepted()
+                };
+                return proto::Response::ok(Some(id), &result);
+            }
             // `toggle` flips the robot's own state — the pad's Start. Evaluated here, not
             // in the client, because a client-side belief drifts (relax, shutdown, either
             // side restarting) and a stale one turns Start into a no-op every other press.
@@ -3616,6 +3748,7 @@ mod tests {
             &proto::Call::RobotEnable(proto::EnableParams {
                 on: true,
                 toggle: false,
+                stand_up: false,
             }),
         )
         .result_as()

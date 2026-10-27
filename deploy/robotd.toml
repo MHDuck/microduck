@@ -122,7 +122,7 @@ gain = 5
 mode = "walk"
 walk = "/opt/robot/daemon/current/policies/walk_hd1910_flat_back_v2.onnx"
 stand = "/opt/robot/daemon/current/policies/standup_hd1910_v6.onnx"
-sitstand = "/opt/robot/daemon/current/policies/sitstand.onnx"
+sitstand = "/opt/robot/daemon/current/policies/sitstand_v3.onnx"
 ground_pick = "/opt/robot/daemon/current/policies/ground_pick_hd1910_v2.onnx"
 kick_left = "none"
 kick_right = "/opt/robot/daemon/current/policies/ball_kick_right_v3.onnx"
@@ -196,7 +196,7 @@ roulade = "/opt/robot/daemon/current/policies/roulade_hd1910_v2.onnx"
 
 [safety]
 # 倾倒/过流触发后关闭全部舵机力矩并锁定；扶正、排障后重启 robotd。
-fall_protection = false
+fall_protection = true
 overcurrent_protection = false
 overcurrent_cutoff_a = 18.0
 overcurrent_debounce_ticks = 2
@@ -207,7 +207,7 @@ overcurrent_debounce_ticks = 2
 #
 # fall_protection=true turns this verdict into a latched torque-off.
 fall_gravity_z = -0.5
-fall_debounce_ms = 200
+fall_debounce_ms = 5000
 
 # How long the robot goes without a velocity intent before it stops.
 #

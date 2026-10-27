@@ -43,6 +43,8 @@ config_sha=$(sha256sum deploy/robotd.toml)
 config_sha=${config_sha%% *}
 robotd_sha=$(sha256sum "$bin_dir/robotd")
 robotd_sha=${robotd_sha%% *}
+keyboard_sha=$(sha256sum scripts/keyboard-control.py)
+keyboard_sha=${keyboard_sha%% *}
 printf '==> source config: %s/deploy/robotd.toml\n' "$PWD"
 echo "==> uploading to $board"
 incoming=".cache/xh-push/upload-$(date +%Y%m%d-%H%M%S)-$$"
@@ -103,6 +105,12 @@ remote_robotd_sha=$(ssh "$board" 'sha256sum /opt/robot/daemon/current/bin/robotd
     echo 'Binary verification failed: installed robotd differs from the local build' >&2
     exit 1
 }
+remote_keyboard_sha=$(ssh "$board" 'sha256sum /opt/robot/daemon/current/scripts/keyboard-control.py')
+[ "${remote_keyboard_sha%% *}" = "$keyboard_sha" ] || {
+    echo 'Keyboard script verification failed: installed keyboard-control.py differs from the local file' >&2
+    exit 1
+}
 ssh "$board" "rm -f -- '$incoming/'* && rmdir -- '$incoming'"
-echo '==> verified: board config and robotd SHA-256 match local files'
+echo '==> verified: board config, robotd and keyboard script SHA-256 match local files'
 echo "==> uploaded and restarted robotd on $board"
+echo '==> Exit the old keyboard control process, then run: sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py'

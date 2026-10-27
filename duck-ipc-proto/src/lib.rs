@@ -1185,6 +1185,7 @@ pub mod test_support {
             Call::RobotEnable(EnableParams {
                 on: true,
                 toggle: false,
+                stand_up: false,
             }),
             Call::RobotInit,
             Call::RobotRelax,
@@ -1838,6 +1839,9 @@ pub struct EnableParams {
     /// ended in.
     #[serde(default)]
     pub toggle: bool,
+    /// Explicit, time-limited recovery using the configured standing network.
+    #[serde(default, skip_serializing_if = "not")]
+    pub stand_up: bool,
 }
 
 /// What an apply should move to.
@@ -2686,6 +2690,20 @@ pub struct SafetyState {
     /// requested gain when it decides the robot has fallen, and that override was invisible.
     #[serde(default)]
     pub gain: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fall: Option<FallStatus>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FallStatus {
+    pub protection_enabled: bool,
+    pub gravity_z_threshold: f64,
+    pub debounce_ms: u64,
+    pub elapsed_ms: u64,
+    pub recovery_active: bool,
+    pub limp_enabled: bool,
+    pub imu_ready: bool,
+    pub imu_fresh: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -4475,6 +4493,7 @@ mod tests {
                 limp: false,
                 gravity: [0.0, 0.0, -1.0],
                 gain: Some(200),
+                fall: None,
             },
             control_loop: LoopState {
                 hz: 50.0,
@@ -4533,6 +4552,7 @@ mod tests {
                 limp: false,
                 gravity: [0.0, 0.0, -1.0],
                 gain: Some(200),
+                fall: None,
             },
             control_loop: LoopState {
                 hz: 49.8,
