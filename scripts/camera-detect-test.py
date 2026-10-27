@@ -161,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     media = config.get("media", {})
     print(f"配置：{config_path}")
     print(f"mediad：{'active' if service_active() else '未运行'}")
-    print(f"摄像头：{'开启' if media.get('camera', True) else '测试图案'}")
+    print(f"摄像头：{'按需采集（连接视频时开启，最后一个连接断开后关闭）' if media.get('camera', True) else '测试图案'}")
     print(f"鸭子检测：{'开启' if detect.get('enabled', False) else '关闭'}")
     print(f"检测频率：{detect.get('hz', 2.0)} Hz（不要为走路测试提高到 2 Hz 以上）")
     print_stats(args.stats)

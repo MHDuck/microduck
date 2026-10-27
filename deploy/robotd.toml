@@ -393,7 +393,8 @@ device = "plughw:CARD=microducki2s3,DEV=0"
 # only supported way to change one was a systemd drop-in, and nobody reaches for a drop-in to
 # answer "why is the video soft?".
 
-# Stream the head camera. Off streams a test pattern instead, which is what a board with no
+# Stream the head camera on demand: first video consumer opens it, last disconnect closes it.
+# Off streams a test pattern instead, which is what a board with no
 # camera wants — the pipeline still starts, so the WebRTC *control* channel still exists. It is
 # bundled with the video track, so a pipeline that will not start costs both.
 # camera = true

@@ -78,7 +78,10 @@
 //! What is left of that risk is a signature that exists but differs, which shows up as a warning
 //! naming the arity rather than as an abort.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use duck_ipc_proto as proto;
@@ -226,7 +229,7 @@ pub struct Frame {
 /// perception consumer and a `get_frame` both want — and neither can slow the encoder down by
 /// being slow itself.
 #[derive(Clone, Default)]
-pub struct Frames(Arc<Mutex<Option<Frame>>>);
+pub struct Frames(Arc<Mutex<Option<Frame>>>, Arc<AtomicBool>);
 
 impl Frames {
     /// Read the latest frame in place, without copying it. `None` until the first one arrives.
@@ -235,11 +238,17 @@ impl Frames {
     /// loop wants a mean, and cloning 1.8 MB twice a second to average 11k bytes of it is a memcpy
     /// nobody needs.
     pub fn inspect<T>(&self, read: impl FnOnce(&Frame) -> T) -> Option<T> {
+        if !self.1.load(Ordering::Acquire) {
+            return None;
+        }
         self.0.lock().expect("frame lock").as_ref().map(read)
     }
 
     /// The latest frame, cloned. `None` until the first one arrives.
     pub fn latest(&self) -> Option<Frame> {
+        if !self.1.load(Ordering::Acquire) {
+            return None;
+        }
         self.0.lock().expect("frame lock").clone()
     }
 }
@@ -297,17 +306,9 @@ pub fn start(
     )?;
 
     let pipeline = gst::Pipeline::new();
-
-    let src = match &source {
-        Source::Test => {
-            let src = make("videotestsrc")?;
-            // `is-live` so the pipeline behaves like a camera does rather than racing ahead of
-            // the clock. A camera is live by construction and needs no such property.
-            src.set_property("is-live", true);
-            src
-        }
-        Source::Camera(camera) => camera_source(camera, fps)?,
-    };
+    let consumers: Consumers = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let frames = Frames::default();
+    let (demand_tx, demand_rx) = std::sync::mpsc::sync_channel(1);
 
     // Pinned rather than negotiated, because both branches of the tee depend on the answer, and a
     // raw consumer that has to guess the format is one that gets it wrong the first time the
@@ -335,6 +336,17 @@ pub fn start(
         .field("height", height as i32)
         .field("framerate", gst::Fraction::new(fps as i32, 1))
         .build();
+    let src = match &source {
+        Source::Test => {
+            let src = make("videotestsrc")?;
+            src.set_property("is-live", true);
+            frames.1.store(true, Ordering::Release);
+            src
+        }
+        Source::Camera(camera) => {
+            on_demand_camera(camera, &caps, consumers.clone(), frames.clone(), demand_rx)?
+        }
+    };
     let capsfilter = gst::ElementFactory::make("capsfilter")
         .property("caps", &caps)
         .build()
@@ -458,9 +470,8 @@ pub fn start(
     // first-frame, and both matter — see `wire_encoder_setup`.
     wire_encoder_setup(&sink)?;
 
-    let consumers: Consumers = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let (channels_tx, channels_rx) = mpsc::channel::<Channel>(4);
-    wire_consumers(&sink, channels_tx, runtime, consumers.clone())?;
+    wire_consumers(&sink, channels_tx, runtime, consumers.clone(), demand_tx)?;
 
     // ── the raw branch ──────────────────────────────────────────────────────
     //
@@ -486,7 +497,6 @@ pub fn start(
         .field("framerate", gst::Fraction::new(fps as i32, 1))
         .build();
 
-    let frames = Frames::default();
     let appsink = gst_app::AppSink::builder()
         .caps(&out_caps)
         // `sync=false` so this branch never waits on the clock: a snapshot wants the newest frame
@@ -526,6 +536,7 @@ pub fn start(
         height,
         fps,
         consumers.clone(),
+        frames.1.clone(),
     )?;
 
     match flip.as_ref() {
@@ -595,6 +606,9 @@ fn wire_frames(appsink: &gst_app::AppSink, frames: Frames, width: u32, height: u
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |sink| {
                 let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                if !frames.1.load(Ordering::Acquire) {
+                    return Ok(gst::FlowSuccess::Ok);
+                }
                 let Some(buffer) = sample.buffer() else {
                     return Ok(gst::FlowSuccess::Ok);
                 };
@@ -756,9 +770,7 @@ fn make(name: &str) -> Result<gst::Element> {
 /// `rawvideoparse blocksize=…`, which is silently wrong the moment stride padding appears. Both
 /// belong to the *subprocess* shape: `v4l2src` attaches a `GstVideoMeta` describing the real
 /// layout, and the frame loss has a cause with a small fix — see [`raise_capture_buffers`].
-fn camera_source(camera: &Camera, fps: u32) -> Result<gst::Element> {
-    pin_sensor_mode(fps)?;
-
+fn camera_source(camera: &Camera) -> Result<gst::Element> {
     // Exposure and gain go through `extra-controls` rather than a `v4l2-ctl` call, so they are
     // applied by whoever opens the device — including after a re-open we did not initiate.
     let controls = gst::Structure::builder("c")
@@ -786,6 +798,127 @@ fn camera_source(camera: &Camera, fps: u32) -> Result<gst::Element> {
         "head camera"
     );
     Ok(src)
+}
+
+fn on_demand_camera(
+    camera: &Camera,
+    caps: &gst::Caps,
+    consumers: Consumers,
+    frames: Frames,
+    changes: std::sync::mpsc::Receiver<()>,
+) -> Result<gst::Element> {
+    let video = gst_video::VideoInfo::from_caps(caps)?;
+    let fps = video.fps().numer() as u32;
+    let bin = gst::Bin::new();
+    let capture = camera_source(camera)?;
+    capture.set_locked_state(true);
+    let idle = gst_app::AppSrc::builder()
+        .caps(caps)
+        .is_live(true)
+        .do_timestamp(true)
+        .format(gst::Format::Time)
+        .max_buffers(1)
+        .leaky_type(gst_app::AppLeakyType::Downstream)
+        .build();
+    let selector = gst::ElementFactory::make("input-selector")
+        .property_from_str("sync-mode", "clock")
+        .property("cache-buffers", true)
+        .property("drop-backwards", true)
+        .build()?;
+    bin.add_many([&capture, idle.upcast_ref(), &selector])?;
+    let camera_pad = selector
+        .request_pad_simple("sink_%u")
+        .context("no camera selector pad")?;
+    let idle_pad = selector
+        .request_pad_simple("sink_%u")
+        .context("no idle selector pad")?;
+    capture
+        .static_pad("src")
+        .context("no camera source pad")?
+        .link(&camera_pad)?;
+    idle.static_pad("src")
+        .context("no idle source pad")?
+        .link(&idle_pad)?;
+    selector.set_property("active-pad", &idle_pad);
+    bin.add_pad(&gst::GhostPad::with_target(
+        &selector
+            .static_pad("src")
+            .context("no selector source pad")?,
+    )?)?;
+
+    // A reused black frame keeps codec discovery and signalling alive without opening the sensor.
+    let mut black = gst::Buffer::with_size(video.size())?;
+    {
+        let buffer = black.get_mut().context("shared idle buffer")?;
+        buffer.set_duration(gst::ClockTime::SECOND / fps as u64);
+        let mut map = buffer.map_writable()?;
+        for pixel in map.as_mut_slice().chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[128, 16, 128, 16]);
+        }
+    }
+    let idle_stats = proto::CameraStats {
+        fps: 0.0,
+        target_fps: fps,
+        width: video.width(),
+        height: video.height(),
+        format: CAPTURE_FORMAT.to_owned(),
+        frames: 0,
+        dropped: 0,
+        consumers: 0,
+    };
+    let _ = proto::publish_camera_stats(&idle_stats);
+    let weak = bin.downgrade();
+    std::thread::Builder::new()
+        .name("camera-demand".into())
+        .spawn(move || {
+            let mut running = false;
+            loop {
+                if weak.upgrade().is_none() {
+                    break;
+                }
+                let wanted = consumers.load(Ordering::Acquire) > 0;
+                if wanted && !running {
+                    selector.set_property("active-pad", &camera_pad);
+                    let started = pin_sensor_mode(fps).and_then(|()| {
+                        capture
+                            .sync_state_with_parent()
+                            .context("camera would not start")
+                    });
+                    match started {
+                        Ok(()) => {
+                            running = true;
+                            frames.1.store(true, Ordering::Release);
+                            tracing::info!("camera on: video consumer connected");
+                        }
+                        Err(error) => {
+                            selector.set_property("active-pad", &idle_pad);
+                            let _ = capture.set_state(gst::State::Null);
+                            tracing::error!(%error, "could not open camera on demand");
+                        }
+                    }
+                } else if !wanted && running {
+                    frames.1.store(false, Ordering::Release);
+                    selector.set_property("active-pad", &idle_pad);
+                    if let Err(error) = capture.set_state(gst::State::Null) {
+                        tracing::error!(%error, "could not close camera");
+                    }
+                    *frames.0.lock().expect("frame lock") = None;
+                    let _ = proto::publish_camera_stats(&idle_stats);
+                    running = false;
+                    tracing::info!("camera off: last video consumer disconnected");
+                }
+                if !running {
+                    let _ = idle.push_buffer(black.clone());
+                }
+                match changes.recv_timeout(std::time::Duration::from_secs(1)) {
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    _ => {}
+                }
+            }
+            frames.1.store(false, Ordering::Release);
+            let _ = capture.set_state(gst::State::Null);
+        })?;
+    Ok(bin.upcast())
 }
 
 /// What the tee carries, and what both branches therefore see.
@@ -1158,6 +1291,7 @@ fn meter_capture_rate(
     height: u32,
     fps: u32,
     consumers: Consumers,
+    capturing: Arc<AtomicBool>,
 ) -> Result<()> {
     let target = fps as f64;
     struct Meter {
@@ -1178,6 +1312,15 @@ fn meter_capture_rate(
     });
 
     pad.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+        if !capturing.load(Ordering::Acquire) {
+            if let Ok(mut meter) = meter.lock() {
+                meter.window_frames = 0;
+                meter.window_start = std::time::Instant::now();
+                meter.last_offset = None;
+                meter.healthy = None;
+            }
+            return gst::PadProbeReturn::Ok;
+        }
         // Must not panic: this is a GStreamer thread, and a panic crossing the C closure boundary
         // aborts the process rather than unwinding.
         let offset = match info.data {
@@ -1254,32 +1397,29 @@ fn wire_consumers(
     channels: mpsc::Sender<Channel>,
     runtime: tokio::runtime::Handle,
     consumers: Consumers,
+    demand: std::sync::mpsc::SyncSender<()>,
 ) -> Result<()> {
-    // Counted here rather than inferred from the log, so `robotctl health` can say whether anyone
-    // is actually watching. `consumer-removed` is guarded the same way `consumer-added` is: a
-    // signal that has moved upstream should degrade the count, not abort the daemon.
-    if glib::subclass::signal::SignalId::lookup("consumer-removed", sink.type_()).is_some() {
-        let leaving = consumers.clone();
-        sink.connect("consumer-removed", false, move |_| {
-            // `fetch_update` rather than `fetch_sub`, so a spurious removal cannot wrap the count
-            // around to four billion viewers.
-            let _ = leaving.fetch_update(
-                std::sync::atomic::Ordering::Relaxed,
-                std::sync::atomic::Ordering::Relaxed,
-                |current| Some(current.saturating_sub(1)),
-            );
-            None
-        });
-    } else {
-        tracing::warn!(
-            "webrtcsink has no consumer-removed signal; the consumer count will only ever rise"
+    for signal in ["consumer-added", "consumer-removed"] {
+        anyhow::ensure!(
+            glib::subclass::signal::SignalId::lookup(signal, sink.type_()).is_some(),
+            "webrtcsink has no {signal} signal for on-demand capture"
         );
     }
+    let leaving = consumers.clone();
+    let idle = demand.clone();
+    sink.connect("consumer-removed", false, move |_| {
+        let _ = leaving.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            Some(current.saturating_sub(1))
+        });
+        let _ = idle.try_send(());
+        None
+    });
 
     let arriving = consumers;
     let channels = Arc::new(channels);
     sink.connect("consumer-added", false, move |values| {
-        arriving.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        arriving.fetch_add(1, Ordering::AcqRel);
+        let _ = demand.try_send(());
         // (webrtcsink, peer_id, webrtcbin). A signature change upstream shows up here as a
         // warning naming what arrived, rather than a panic in a signal handler.
         let Some(webrtcbin) = values.get(2).and_then(|v| v.get::<gst::Element>().ok()) else {

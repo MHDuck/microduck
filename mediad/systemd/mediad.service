@@ -34,12 +34,8 @@ Type=exec
 # and nobody reaches for a drop-in to answer "why is the video soft?". The config file is the one
 # place per-board settings survive an update *and* a rollback (architecture.md §3).
 #
-# **The consequence of the camera being on by default, stated because it is not obvious:** the
-# control datachannel is bundled with the video track, so a robot whose camera is absent —
-# unplugged, or the device-tree overlay not enabled — fails to start this service and loses its
-# WebRTC control surface along with its video. BLE and the local pad are unaffected. The fix on
-# such a board is `camera = false` in `[media]`, which streams a test pattern: the pipeline starts,
-# so the control channel exists.
+# With camera = true, capture opens for the first video consumer and closes after the last leaves.
+# Signalling stays available on idle black frames; camera = false uses the test pattern instead.
 ExecStart=/opt/robot/daemon/current/bin/mediad
 
 # Unprivileged, with two supplementary groups and nothing else.
@@ -125,8 +121,8 @@ RuntimeDirectory=mediad
 #
 # It was absent while `mediad` had never started on a board. It has, so it is here.
 #
-# **Two ways this unit can now fail on a robot nobody was looking at, and what each costs.** Both
-# are visible in `robotctl health` as a unit that is not running, and neither touches the control
+# **A missing GStreamer stack prevents startup.** This is visible in `robotctl health` as a unit
+# that is not running, and does not touch the control
 # loop, BLE, the pad or an update:
 #
 #   * **A board with no GStreamer stack.** Provisioning installs it, and so does the pre-install
@@ -134,8 +130,7 @@ RuntimeDirectory=mediad
 #     board reaching this state has had both fail, most likely for want of network. The pipeline
 #     cannot start, `Restart=always` retries every five seconds, and re-running it by hand is
 #     `sudo /usr/local/sbin/robot-setup-gstreamer`.
-#   * **A board with no camera**, because `[media] camera` defaults to on. Same shape, and
-#     `sudo robotctl configure` → `media.camera` off is the fix.
+# A missing camera is reported when a video consumer connects; it no longer prevents startup.
 #
 # `WantedBy=multi-user.target` rather than a `.wants` symlink somebody adds: the release owns which
 # units exist and systemd owns whether they are enabled, and a robot whose enablement was done by

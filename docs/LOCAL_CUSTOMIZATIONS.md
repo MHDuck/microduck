@@ -100,6 +100,9 @@ sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py \
 
 ## 4. 摄像头流和鸭子检测（不关联舵机）
 
+本地相机按需采集：浏览器点击 `connect` 建立视频连接时开启，最后一个观看者断开后关闭。
+无人观看时自动曝光和鸭子检测暂停，网页与视频连接入口保持可用。
+
 最新版官方工程已经包含：
 
 - `mediad` 摄像头 + WebRTC 流；
