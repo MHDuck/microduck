@@ -233,6 +233,11 @@ impl<T: RobotIo, U: ImuIo> Safety<T, U> {
         self.fallen
     }
 
+    pub fn reset_fall_detection(&mut self) {
+        self.falling_for = Duration::ZERO;
+        self.fallen = false;
+    }
+
     /// Power the joints, so the positions this writes can actually be held.
     ///
     /// Through here because [`Safety`] owns the only [`RobotIo`] handle — the same reason

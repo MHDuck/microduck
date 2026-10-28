@@ -1541,6 +1541,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
     let mut window_ticks = 0u64;
     let mut last_summary = Instant::now();
     let mut was_driving = false;
+    let mut was_rolling = false;
     let mut was_enabled = false;
     let mut bringup = Bringup::Limp;
     // `robot.mouth` is also valid while the body is limp. No bus write happens until a client
@@ -1852,6 +1853,18 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
             }
         }
 
+        let rolling = was_rolling
+            && intents.enabled()
+            && bringup == Bringup::Ready
+            && stand_up_until.is_none()
+            && power_request.is_none()
+            && shutdown_sit.is_none()
+            && mode_change.is_none()
+            && !powered_off;
+        if rolling {
+            // A deliberate roll must not count toward the next fall debounce.
+            safety.reset_fall_detection();
+        }
         let auto_recovery_allowed = params.safety.fall_protection
             && policy_cfg.mode == Mode::Walk
             && was_driving
@@ -1871,7 +1884,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                 .as_ref()
                 .is_some_and(Controller::allows_fall_recovery);
         if let Some(fresh) = fresh.as_ref() {
-            if imu_read_errors == 0 {
+            if imu_read_errors == 0 && !rolling {
                 safety.observe_with_recovery(fresh, period, auto_recovery_allowed);
             }
             // Only once the orientation filter has converged: seeding the anchor from a
@@ -2597,6 +2610,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
             ),
             _ => (hold, policy_cfg.gain, false, "held"),
         };
+        was_rolling = policy_label == "roulade";
         if policy_label == "walk"
             && command.twist_magnitude() > DEFAULT_STANDING_THRESHOLD
             && !safety.fallen()
