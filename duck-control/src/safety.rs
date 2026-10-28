@@ -183,6 +183,13 @@ impl<T: RobotIo, U: ImuIo> Safety<T, U> {
         self.falling_for = Duration::ZERO;
     }
 
+    pub fn latch_fall_protection(&mut self) {
+        if self.protection.is_none() {
+            self.protection = Some(Limit::FallProtection);
+            tracing::error!("fall protection latched; restart robotd after clearing the fault");
+        }
+    }
+
     /// Retry failed torque-off writes even when there are no fresh sensor samples.
     pub fn enforce_protection(&mut self) -> Result<(), IoError> {
         if self.protection.is_some() && !self.protection_torque_off {
@@ -283,6 +290,10 @@ impl<T: RobotIo, U: ImuIo> Safety<T, U> {
     /// fallen, and one upright sample clears the accumulator. Without the debounce, the
     /// impulse from a firm footfall reads as a fall.
     pub fn observe(&mut self, sensors: &Sensors, dt: Duration) {
+        self.observe_with_recovery(sensors, dt, false);
+    }
+
+    pub fn observe_with_recovery(&mut self, sensors: &Sensors, dt: Duration, allow_recovery: bool) {
         // An orientation filter that has not converged does not get a vote.
         //
         // The SFLP filter needs a few seconds of samples before its quaternion means
@@ -348,12 +359,11 @@ impl<T: RobotIo, U: ImuIo> Safety<T, U> {
         }
         if self.config.fall_protection
             && !self.fall_recovery
+            && !allow_recovery
             && self.fallen
             && self.protection.is_none()
         {
-            self.protection = Some(Limit::FallProtection);
-            tracing::error!(gravity_z = sensors.imu.gravity[2],
-                "fall protection latched; restart robotd after standing the robot upright");
+            self.latch_fall_protection();
         }
     }
 

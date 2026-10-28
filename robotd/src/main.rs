@@ -101,6 +101,7 @@ const RATE_WINDOW: Duration = Duration::from_secs(1);
 /// whether the button did anything, slow enough that a robot going from limp to standing does not
 /// snap. Not a parameter yet — one number with no evidence that anyone wants a different one.
 const HOME_RAMP: Duration = Duration::from_secs(2);
+const AUTO_STAND_UP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Smoothing on the reported battery voltage. At one sample per [`RATE_WINDOW`] this is a
 /// ~10 s time constant, which is what makes the number readable: the raw voltage sags
@@ -1607,6 +1608,10 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
     let mut limp_fall = LimpFall::Idle;
     let mut stand_up_until: Option<Instant> = None;
     let mut stand_up_upright = Duration::ZERO;
+    let mut stand_up_automatic = false;
+    let mut stand_up_log_at = Instant::now();
+    let mut stand_up_failed = false;
+    let mut auto_recovery_attempted = false;
 
     // The voice, and the ear. Both optional equipment: a robot without a codec or a bank
     // walks identically — the player degrades to a debug line, and the mic worker is only
@@ -1747,7 +1752,9 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
         let mut power_request = intents.take_power_request();
         if power_request == Some(intents::PowerRequest::StandUp) {
             power_request = None;
-            let result = if powered_off || shutdown_sit.is_some() || mode_change.is_some() {
+            let result = if stand_up_until.is_some() {
+                Err("stand-up recovery already in progress")
+            } else if powered_off || shutdown_sit.is_some() || mode_change.is_some() {
                 Err("shutdown or mode switch in progress")
             } else if !safety.imu_ready() || imu_read_errors != 0 || fresh.is_none() {
                 Err("stand-up requires fresh sensors and a ready IMU")
@@ -1764,6 +1771,10 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                     intents.set_enabled(true);
                     stand_up_until = Some(tick_start + Duration::from_secs(12));
                     stand_up_upright = Duration::ZERO;
+                    stand_up_automatic = false;
+                    stand_up_log_at = tick_start;
+                    stand_up_failed = false;
+                    auto_recovery_attempted = false;
                     seated_boot = false;
                     bringup = Bringup::Limp;
                     limp_fall = LimpFall::Idle;
@@ -1801,10 +1812,14 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                 || powered_off
                 || safety.protection().is_some();
             let complete = stand_up_upright >= Duration::from_millis(500);
+            intents.stop();
+            intents.set_pose(intents::PoseIntent::default());
             if tick_start >= deadline && !complete && !cancelled {
                 intents.set_enabled(false);
-                power_request = Some(intents::PowerRequest::Relax);
+                stand_up_failed = true;
+                safety.latch_fall_protection();
                 tracing::error!(
+                    automatic = stand_up_automatic,
                     gravity_z = last_imu.gravity[2],
                     angular_speed = last_imu.gyro.iter().map(|w| w * w).sum::<f64>().sqrt(),
                     upright_ms = stand_up_upright.as_millis(),
@@ -1814,16 +1829,50 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                     "stand-up timed out; cutting torque"
                 );
             }
+            if tick_start < deadline && !complete && !cancelled && tick_start >= stand_up_log_at {
+                tracing::info!(
+                    automatic = stand_up_automatic,
+                    remaining_ms = deadline.duration_since(tick_start).as_millis(),
+                    gravity_z = last_imu.gravity[2],
+                    upright_ms = stand_up_upright.as_millis(),
+                    "stand-up recovery progress"
+                );
+                stand_up_log_at = tick_start + Duration::from_secs(1);
+            }
             if complete || cancelled || tick_start >= deadline {
                 stand_up_until = None;
                 safety.end_fall_recovery();
-                tracing::warn!(complete, cancelled, "stand-up recovery ended");
+                tracing::warn!(
+                    automatic = stand_up_automatic,
+                    complete,
+                    cancelled,
+                    "stand-up recovery ended"
+                );
+                stand_up_automatic = false;
             }
         }
 
+        let auto_recovery_allowed = params.safety.fall_protection
+            && policy_cfg.mode == Mode::Walk
+            && was_driving
+            && intents.enabled()
+            && bringup == Bringup::Ready
+            && stand_up_until.is_none()
+            && power_request.is_none()
+            && shutdown_sit.is_none()
+            && mode_change.is_none()
+            && !powered_off
+            && safety.protection().is_none()
+            && safety.imu_ready()
+            && safety.imu_stale().run == 0
+            && imu_read_errors == 0
+            && fresh.is_some()
+            && controller
+                .as_ref()
+                .is_some_and(Controller::allows_fall_recovery);
         if let Some(fresh) = fresh.as_ref() {
             if imu_read_errors == 0 {
-                safety.observe(fresh, period);
+                safety.observe_with_recovery(fresh, period, auto_recovery_allowed);
             }
             // Only once the orientation filter has converged: seeding the anchor from a
             // quaternion that is still swinging would put the world origin somewhere the
@@ -1831,6 +1880,42 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
             // into the estimator would tell it the robot froze, which it did not.
             if safety.imu_ready() {
                 odometry.update(&fresh.positions, fresh.imu.quat);
+            }
+        }
+        if auto_recovery_allowed && safety.fallen() {
+            let result = if auto_recovery_attempted {
+                Err("stand-up recovery already attempted; reposition and press Enter")
+            } else {
+                auto_recovery_attempted = true;
+                controller
+                    .as_mut()
+                    .expect("recovery requires a controller")
+                    .stand_up()
+                    .and_then(|_| safety.begin_fall_recovery())
+            };
+            match result {
+                Ok(()) => {
+                    intents.stop();
+                    intents.set_pose(intents::PoseIntent::default());
+                    stand_up_until = Some(tick_start + AUTO_STAND_UP_TIMEOUT);
+                    stand_up_upright = Duration::ZERO;
+                    stand_up_automatic = true;
+                    stand_up_log_at = tick_start;
+                    limp_fall = LimpFall::Idle;
+                    falling.reset();
+                    twist_ema = [0.0; 3];
+                    head_ema = [0.0; 4];
+                    body_ema = [0.0; 3];
+                    tracing::warn!(
+                        timeout_ms = AUTO_STAND_UP_TIMEOUT.as_millis(),
+                        "automatic stand-up recovery started after fall; overcurrent protection remains active"
+                    );
+                }
+                Err(reason) => {
+                    stand_up_failed = true;
+                    tracing::error!(reason, "automatic stand-up refused; cutting torque");
+                    safety.latch_fall_protection();
+                }
             }
         }
         state.fallen.store(safety.fallen(), Ordering::Relaxed);
@@ -1977,7 +2062,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                     }
                     if requests.sit_toggle {
                         match controller.sit_toggle() {
-                            Ok(_) => {}
+                            Ok(_) => auto_recovery_attempted = false,
                             Err(reason) => tracing::warn!(reason, "sit toggle refused"),
                         }
                     }
@@ -2512,6 +2597,18 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
             ),
             _ => (hold, policy_cfg.gain, false, "held"),
         };
+        if policy_label == "walk"
+            && command.twist_magnitude() > DEFAULT_STANDING_THRESHOLD
+            && !safety.fallen()
+            && safety.imu_ready()
+            && safety.imu_stale().run == 0
+            && imu_read_errors == 0
+            && let Some(fresh) = fresh.as_ref()
+            && fresh.imu.gravity[2] < -0.9
+            && fresh.imu.gyro.iter().map(|w| w * w).sum::<f64>() < 1.0
+        {
+            auto_recovery_attempted = false;
+        }
         state.moving.store(moving, Ordering::Relaxed);
 
         // The theremin: a hand's distance in front of the beak, turned into a note and a
@@ -2761,6 +2858,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                         debounce_ms: params.safety.fall_debounce_ms,
                         elapsed_ms: safety.fall_elapsed().as_millis() as u64,
                         recovery_active: stand_up_until.is_some(),
+                        recovery_failed: stand_up_failed,
                         limp_enabled: params.safety.limp_fall && !params.safety.fall_protection,
                         imu_ready: safety.imu_ready(),
                         imu_fresh: fresh.is_some()

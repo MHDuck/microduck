@@ -2701,6 +2701,8 @@ pub struct FallStatus {
     pub debounce_ms: u64,
     pub elapsed_ms: u64,
     pub recovery_active: bool,
+    #[serde(default)]
+    pub recovery_failed: bool,
     pub limp_enabled: bool,
     pub imu_ready: bool,
     pub imu_fresh: bool,

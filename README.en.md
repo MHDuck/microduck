@@ -219,7 +219,7 @@ Every accepted **Enter** press runs `systemctl restart robotd`, reconnects, wait
 
 Recovery runs StandUp directly, without a HOME or SitStand transition. Velocity commands are zeroed during recovery. Fall latching and predictive fall gain reduction are temporarily suspended; overcurrent protection still follows its configured setting. Completion requires a ready IMU, successful reads, and fresh samples with gravity `z < -0.9` and angular-speed magnitude `< 1 rad/s`, accumulated for 500 ms. Repeated samples pause the timer; a fresh unstable sample or an IMU that is no longer ready resets it. Joint angles do not have to match HOME. The keyboard controller reports completion after observing the policy transition from `standup` to `stand`.
 
-If StandUp has not completed within 12 seconds, the daemon requests torque release. Enter can retry after the fault is resolved. When upgrading from an older version, deploy both the matching `robotd` binary and keyboard script to support the StandUp request and live protection status. Later changes limited to the interface require only a script update. A custom `--socket` requests StandUp without restarting or stopping the default systemd service.
+If StandUp has not completed within 12 seconds, the daemon latches protection and requests torque release. The interface displays `起身失败，摆好姿势后按 Enter 重试` (StandUp failed; reposition the robot and press Enter to retry). When upgrading from an older version, deploy both the matching `robotd` binary and keyboard script to support the StandUp request and live protection status. Later changes limited to the interface require only a script update. A custom `--socket` requests StandUp without restarting or stopping the default systemd service.
 
 The main interface displays **one short status or fault**, with no appended velocity, IMU readings, gravity, timers, keyboard-enabled flag, or voice-enabled flag. Messages currently appear in Chinese, for example `站立中` (standing), `行走中` (walking), `倾倒中` (tilting), `倒地中` (fallen), and `倾倒保护了` (fall protection triggered). Faults include `22 电机无响应` (motor 22 is not responding), `BNO085 连接异常` (BNO085 connection fault), `ONNX 文件缺失` (missing ONNX file), and `配置文件错误` (configuration error). A motor ID is shown only when the reported error identifies it.
 
@@ -228,6 +228,10 @@ Faults take priority and are cleared after successful Enter recovery. If communi
 **C** opens detailed diagnostics: commanded velocity, actual policy, IMU readiness/freshness, gravity z, fall settings and timers, current readings, and raw errors. It also replays the most recent 100 diagnostic messages. C remains available when `robotd` is disconnected. With a working control connection, opening diagnostics also starts current CSV recording; pressing C again closes diagnostics and ends recording. C does not change motion commands: use Space to stop.
 
 CSV files default to `logs/` under the working directory; use `--log-dir` to change the destination. They contain current samples, policy, commanded velocity, and related fields, not the raw error messages shown in the terminal. Enter ends the current CSV recording before restarting the service. If diagnostics remain open after recovery, press C to close them, then C again to start a new recording. With the default socket, a journal follower reads `robotd` service errors and exits with the keyboard program. Custom sockets receive live state but do not follow the default service journal.
+
+In drive mode, **L** independently toggles runtime logs without starting current CSV recording. It shows the current policy's ONNX filename, policy/model transitions, a once-per-second snapshot of requested/applied commands and IMU/protection state, and the runtime messages already emitted by `robotd`. Opening L replays the most recent 100 messages. Look for `walk → stand`, `rise → stand`, or Enter's `standup → stand`; both `stand` and `standup` use the StandUp file configured as `policy.stand`. L also works while disconnected, waiting for the IMU, or running Enter recovery. It does not change the daemon's logging level.
+
+C and L are independent: close C to view runtime logs without the current display, and close both to return to the concise interface. In head/body pose mode, L retains its roll-adjustment function; return to drive mode before using it as a log toggle.
 
 After uploading an updated script, exit and relaunch keycontrol. If the main interface still shows the old combined line containing `IMU新`, `z=...`, or `键盘开`, check that the new script was uploaded and the old Python process has exited. `xh_push.sh` verifies the installed keyboard script against the local file.
 
@@ -246,14 +250,17 @@ After uploading an updated script, exit and relaunch keycontrol. If the main int
 | Hold P for 2 seconds | Hold Select | Request sit and shutdown; release torque directly if sitting is unavailable; support the robot first |
 | Space | — | Zero velocity and pose targets, and release mouth, sound, and repeated-roll inputs |
 | C | — | Open / close detailed diagnostics and start / stop current CSV recording when connected |
+| L (drive mode) | — | Independently toggle runtime logs: ONNX, policy transitions, recovery/protection and daemon messages; no current CSV |
 | H | — | Toggle voice playback while walking; manual R/F sound input pauses automatic voice playback |
 | Esc / Ctrl-C | — | Exit and release torque; the default connection also stops `robotd`; support the robot before exiting |
 
 In head mode, W/S adjusts head pitch, A/D head yaw, I/K neck pitch, and J/L head roll, in 0.10 rad steps within ±2.5 rad. In body pose mode, W/S adjusts height in 0.001 m steps within −0.025 to +0.010 m; I/K adjusts pitch and J/L roll in 0.02 rad steps within ±0.2618 rad. Pose targets persist after release; Space resets them. These modes do not send walking velocity commands.
 
-Terminals do not report key releases, so the script estimates holds and releases from key repeats. R/F/X release after about 0.3 seconds. Leave more than one second between separate presses of Enter, Y/B, T, G, Z/V, C, and H. M/P trigger only once per hold. Missing action models produce a short refusal while keeping the session open; press C for the reason.
+Terminals do not report key releases, so the script estimates holds and releases from key repeats. R/F/X release after about 0.3 seconds. Leave more than one second between separate presses of Enter, Y/B, T, G, Z/V, C, L (log toggle), and H. M/P trigger only once per hold. Missing action models produce a short refusal while keeping the session open; press C or L for the reason.
 
 T uses `policy.sitstand`, currently `sitstand_v3.onnx`. It does not restart `robotd` and does not replace Enter for getting up after a fall. Stopping `padd` before keyboard control prevents competing commands; restore gamepad control with `sudo systemctl start robotd padd`.
+
+Policy transitions follow master's automatic selection. After the smoothed walking command magnitude enters the zero-speed threshold (≤0.05), walk continues for three seconds before switching to the StandUp model in `policy.stand`; renewed movement resets the timer. SitStand's rising phase runs for three seconds, then switches directly to StandUp at zero velocity without another three-second delay. Sitting remains on SitStand. Kick, roll, and pickup windows started during normal standing/walking also hand control back to automatic selection when they finish: StandUp at zero velocity, or walk with a movement command. StandUp continues inference to control posture rather than freezing its last output. These transition timers are separate from Enter's 12-second recovery timeout.
 
 Use `--walk-voice` to enable voice playback while walking at startup. `--voice-sound-only` disables mouth animation for automatic voice playback; manual R/F still controls the mouth. Standalone voice, camera diagnostics, and StandUp testing are documented in [local customizations (Chinese)](docs/LOCAL_CUSTOMIZATIONS.md).
 
@@ -266,23 +273,27 @@ sudo systemctl stop servo-web
 sudo systemctl start robotd padd
 ```
 
-The current [deploy/robotd.toml](deploy/robotd.toml) sets `fall_protection = true`, `fall_gravity_z = -0.5`, and `fall_debounce_ms = 5000`; `overcurrent_protection = false`. On an installed robot, `/etc/robot/robotd.toml` is authoritative. Press C to inspect the active fall settings and timer.
+The current [deploy/robotd.toml](deploy/robotd.toml) sets `fall_protection = true`, `fall_gravity_z = -0.5`, and `fall_debounce_ms = 200`; `overcurrent_protection = false`. On an installed robot, `/etc/robot/robotd.toml` is authoritative. Press C or L to inspect the active fall settings and timer.
 
 | Mechanism | Detection and response |
 | --- | --- |
-| Latched fall protection | With the IMU ready and providing fresh samples, trunk gravity `z > fall_gravity_z` accumulates time until `fall_debounce_ms` is reached. This confirms a fall; when `fall_protection` is enabled, it latches protection and requests torque release throughout the robot. Returning upright does not clear the latch |
+| Fall recovery and latching | With `fall_protection` enabled and a ready IMU providing fresh samples, trunk gravity `z > fall_gravity_z` accumulates time until `fall_debounce_ms` confirms a fall. During normal standing/walking or SitStand rising in walk mode, velocity is zeroed and StandUp runs for up to five seconds. A confirmed fall interrupts rising immediately, without waiting for its three-second window to end. Failure latches protection and requests torque release throughout the robot. Missing StandUp or an ineligible control state causes an immediate latch. Returning upright does not clear a latch |
 | Predictive fall gain reduction | Runs only when `fall_protection = false`, `limp_fall = true`, and the controller is in an eligible state. It predicts continued tipping from IMU gravity and angular velocity, lowers gains, then returns the joints to HOME after landing or a timeout before handing control back to the policy. This is not a torque-off latch |
 | Latched overcurrent protection | When `overcurrent_protection` is enabled, estimated servo supply current must exceed the cutoff for the configured number of consecutive ticks before protection latches and requests torque release. The current settings are 18 A and 2 ticks, but the feature is switched off |
 
-A fresh sample within the normal angle range clears the fall timer, as does an IMU that is no longer ready. Repeated samples pause accumulation. The configured five seconds therefore means accumulated time from valid samples; repeated or missing samples can make the actual wait longer. The short status is `倾倒中` while timing, `倒地中` for a confirmed fall without a latch, and `倾倒保护了` once fall protection latches.
+The 200 ms fall confirmation uses accumulated valid samples. A fresh normal-angle sample or an unready IMU resets that timer; repeated samples pause it. Once a fall is confirmed, the separate five-second recovery deadline uses elapsed time and is never extended by stale IMU data, read failures, or new movement commands. Completion uses the same criterion as Enter: fresh valid samples with gravity `z < -0.9` and angular-speed magnitude `< 1 rad/s`, accumulated for 500 ms. The short status progresses from `倾倒中` to `起身中`, then `站立中` on success or `起身失败，摆好姿势后按 Enter 重试` on failure. L shows the recovery start, remaining time, and outcome.
 
-To set fall confirmation to five or ten seconds, edit this value in the existing `[safety]` section rather than adding a duplicate section:
+This setting controls fall confirmation, not the StandUp timeout:
 
 ```toml
-fall_debounce_ms = 5000  # Five seconds; use 10000 for ten seconds.
+fall_debounce_ms = 200  # Confirm after 200 ms of valid samples, then try StandUp for five seconds.
 ```
 
-After synchronizing the configuration to the board, resolve faults and provide space for the robot to get up, then press Enter to restart `robotd` and run StandUp. The new configuration takes effect on restart. When deploying with `xh_push.sh`, update the local `deploy/robotd.toml` first so the upload does not overwrite board-side tuning.
+Automatic recovery uses `AUTO_STAND_UP_TIMEOUT` in `robotd/src/main.rs`, currently five seconds. Keycontrol also has an independent `AUTO_STANDUP_TIMEOUT_S = 5.0` and requests torque release if `standup` persists past that deadline. Change both values together, rebuild, and update the script when adjusting the limit. Enter recovery retains its 12-second timeout.
+
+Each fall gets one automatic attempt. Falling again after a brief completion latches protection instead of starting another five-second attempt. A subsequent attempt becomes eligible after walking resumes upright on a new movement command, or after another accepted T sit/stand action. Failure is reported in live state without depending on logs; keycontrol stops motion commands and W/T cannot restore torque. Reposition the robot and press Enter to retry. Overcurrent protection retains its configured behavior during recovery.
+
+Deploy the matching robotd binary, keyboard script, and configuration, then restart the service. A script-only update cannot enable automatic recovery. When deploying with `xh_push.sh`, update the local `deploy/robotd.toml` first so the upload does not overwrite board-side tuning.
 
 Predictive gain reduction uses separate settings: by default, the robot must already be tilted past `z > -0.90`, still be tipping, and be predicted to pass `z > -0.5` within 300 ms. The condition must hold for 60 ms before triggering. `limp_fall_debounce_ms` controls this prediction confirmation time; `limp_fall_max_ms` limits how long the robot remains at reduced gains, defaulting to 1500 ms. Neither is the fall-latch timer `fall_debounce_ms`. Since latched fall protection is currently enabled, this predictive sequence does not run.
 

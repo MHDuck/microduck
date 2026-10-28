@@ -35,6 +35,8 @@ JOINT_IDS = (20, 21, 22, 23, 24, 30, 31, 32, 33, 34, 10, 11, 12, 13, 14)
 
 DEFAULT_WALK_EMOTIONS = "laughing"
 DEFAULT_VOICE_GAP_S = 0.0
+AUTO_STANDUP_TIMEOUT_S = 5.0
+STANDUP_FAILED = "起身失败，摆好姿势后按 Enter 重试"
 
 
 class VoiceInterrupted(RuntimeError):
@@ -176,6 +178,8 @@ class RobotdDiagnostics:
         self.messages = queue.Queue(maxsize=100)
         self.history = deque(maxlen=100)
         self.verbose = False
+        self.runtime_verbose = False
+        self.recovery_failed = False
         self.last_error = ""
         self._shown_error = ""
         self._previous = ""
@@ -187,6 +191,8 @@ class RobotdDiagnostics:
         self._health_error = ""
         self._phase = None
         self._fall_config = None
+        self._models = {}
+        self._policy = None
         if socket_path == "/run/robotd.sock":
             try:
                 self._process = subprocess.Popen(
@@ -220,6 +226,8 @@ class RobotdDiagnostics:
                     while not self._stop.is_set():
                         if time.monotonic() >= next_health:
                             stream.sendall(b'{"jsonrpc":"2.0","id":3,"method":"robot.health","params":{}}\n')
+                            if self.runtime_verbose:
+                                stream.sendall(b'{"jsonrpc":"2.0","id":2,"method":"robot.subscribe","params":{"hz":10}}\n')
                             next_health = time.monotonic() + 1.0
                         if not select.select([stream], [], [], 0.2)[0]:
                             continue
@@ -239,6 +247,8 @@ class RobotdDiagnostics:
                                 raise RuntimeError(f"状态订阅失败：{message}")
                             if message.get("method") == "robot.state":
                                 self._accept_state(message["params"])
+                            elif message.get("id") == 2:
+                                self._models = result
                             elif message.get("id") == 3:
                                 self._health = result
                                 self._health_error = "" if result.get("healthy") else str(
@@ -251,6 +261,8 @@ class RobotdDiagnostics:
                 self._health = {}
                 self._health_error = str(error)
                 self._phase = self._fall_config = None
+                self._models = {}
+                self._policy = None
                 if not self._stop.is_set():
                     self.report(f"实时状态未连接：{error}；正在重连")
                     self._stop.wait(0.5)
@@ -259,6 +271,12 @@ class RobotdDiagnostics:
         if not isinstance(state, dict):
             raise ValueError("robotd 状态帧格式错误")
         self._state = (state, time.monotonic())
+        policy = (state.get("policy"), self.model_name(state.get("policy")))
+        if policy != self._policy:
+            previous = f"{self._policy[0]} ({self._policy[1]})" if self._policy else "未订阅"
+            self._policy = policy
+            self.report(f"策略/模型切换：{previous} -> {policy[0]}；{self.runtime_status()}",
+                        fault=False, runtime=True)
         if self.last_error == "robotd 未连接，按 ENTER，启动 DUCK":
             self.last_error = self._shown_error = ""
         safety = state.get("safety", {})
@@ -279,6 +297,8 @@ class RobotdDiagnostics:
         fault = False
         if "overcurrent" in limits:
             phase, fault = "过流保护已锁定", True
+        elif fall.get("recovery_failed"):
+            phase, fault = STANDUP_FAILED, True
         elif "fall_protection" in limits:
             phase, fault = "倾倒保护已锁定", True
         elif fall.get("recovery_active"):
@@ -334,6 +354,10 @@ class RobotdDiagnostics:
     @staticmethod
     def brief_error(message):
         lower = message.lower()
+        if ("standup" in lower or "stand-up" in lower or "起身失败" in message) and any(
+            word in lower for word in ("未完成", "未收到", "timeout", "timed out", "already attempted", "起身失败")
+        ):
+            return STANDUP_FAILED
         if "fall protection latched" in lower or "倾倒保护已锁定" in message:
             return "倾倒保护了"
         if "overcurrent protection latched" in lower or "过流保护已锁定" in message:
@@ -358,8 +382,6 @@ class RobotdDiagnostics:
             return "robotd 正在启动"
         if "control loop" in lower:
             return "控制循环异常"
-        if "standup" in lower and any(word in lower for word in ("未完成", "未收到", "timeout", "timed out")):
-            return "起身未完成，按 Enter 重试"
         if any(word in lower for word in ("实时状态未连接", "通信中断", "robotd 未连接", "状态流已断开")):
             return "robotd 未连接，按 ENTER，启动 DUCK"
         if "journalctl" in lower or "无法读取 robotd 日志" in message:
@@ -380,6 +402,8 @@ class RobotdDiagnostics:
             policy = state.get("policy")
             if "overcurrent" in limits:
                 return "电机过流保护了"
+            elif self.recovery_failed or fall.get("recovery_failed"):
+                return "起身失败，卸力请求失败" if "卸力请求失败" in self.last_error else STANDUP_FAILED
             elif "fall_protection" in limits:
                 return "倾倒保护了"
             elif policy == "protection":
@@ -407,14 +431,32 @@ class RobotdDiagnostics:
                 }.get(policy, "动作执行中")
         return self.last_error or status
 
-    def report(self, message, *, fault=True, summary=None):
+    def model_name(self, policy):
+        if policy in ("held", "protection", "homing", "limp_fall", "limp_pose"):
+            return "无（当前未执行运动模型）"
+        key = {"standup": "stand", "sit": "sitstand", "rise": "sitstand", "roller": "walk"}.get(policy, policy)
+        return self._models.get(key) or "未上报"
+
+    def runtime_status(self):
+        state, received = self._state
+        if state is None or time.monotonic() - received > 1.0:
+            return self.state_status()
+        movement = state.get("move", {})
+        policy = state.get("policy")
+        return (f"t={state.get('t', 0):.3f}s 策略={policy}，ONNX={self.model_name(policy)}；"
+                f"指令={movement.get('requested')}，应用={movement.get('applied')}；{self.state_status()}")
+
+    def report(self, message, *, fault=True, summary=None, runtime=False):
         message = re.sub(r"\x1b\[[0-9;]*m", "", message).strip()
-        message = re.sub(r"^\d{4}-\d\d-\d\dT\S+\s+", "", message)
+        if not runtime:
+            message = re.sub(r"^\d{4}-\d\d-\d\dT\S+\s+", "", message)
         if not message or message == self._previous:
             return
         self._previous = message
         if fault:
             brief = summary or self.brief_error(message)
+            if brief == STANDUP_FAILED:
+                self.recovery_failed = True
             if brief == "robotd 正在启动":
                 fault = False
             elif brief == "robotd 未连接，按 ENTER，启动 DUCK" and self.last_error:
@@ -424,7 +466,7 @@ class RobotdDiagnostics:
             elif brief or not self.last_error:
                 self.last_error = brief or "robotd 出错，按 C 查看详情"
         with suppress(queue.Full):
-            self.messages.put_nowait((message, fault))
+            self.messages.put_nowait((message, fault, runtime))
 
     def _follow(self):
         context_pid = None
@@ -463,21 +505,23 @@ class RobotdDiagnostics:
                 elif "overcurrent protection latched" in plain:
                     message = f"过流保护已锁定，已请求全身卸力：{plain}"
                 self.report(message)
-            elif context_left and entry.get("_PID") == context_pid:
-                if re.search(r"\b(?:TRACE|DEBUG|INFO|WARN)\b", plain):
-                    context_left = 0
-                else:
-                    context_left -= 1
-                    self.report(message)
+            elif context_left and entry.get("_PID") == context_pid and not re.search(
+                r"\b(?:TRACE|DEBUG|INFO|WARN)\b", plain,
+            ):
+                context_left -= 1
+                self.report(message)
+            else:
+                context_left = 0
+                self.report(message, fault=False, runtime=True)
 
     def display(self):
         while True:
             try:
-                message, fault = self.messages.get_nowait()
+                message, fault, runtime = self.messages.get_nowait()
             except queue.Empty:
                 return
-            self.history.append((message, fault))
-            if self.verbose:
+            self.history.append((message, fault, runtime))
+            if self.runtime_verbose or (self.verbose and not runtime):
                 print(f"\r\033[K[robotd {'故障' if fault else '状态'}] {message}", flush=True)
             elif fault and self.last_error != self._shown_error:
                 self._shown_error = self.last_error
@@ -487,12 +531,23 @@ class RobotdDiagnostics:
         self.display()
         self.verbose = enabled
         if enabled:
-            for message, fault in self.history:
+            for message, fault, runtime in self.history:
+                if not runtime:
+                    print(f"\r\033[K[robotd {'故障' if fault else '状态'}] {message}", flush=True)
+
+    def toggle_runtime(self):
+        self.display()
+        self.runtime_verbose = not self.runtime_verbose
+        print(f"\r\033[K运行日志已{'开启' if self.runtime_verbose else '关闭'}（行走模式按 L 切换）。", flush=True)
+        if self.runtime_verbose:
+            for message, fault, _ in self.history:
                 print(f"\r\033[K[robotd {'故障' if fault else '状态'}] {message}", flush=True)
+            print(f"[运行] {self.runtime_status()}", flush=True)
 
     def clear(self):
         self.display()
         self._previous = self.last_error = self._shown_error = ""
+        self.recovery_failed = False
 
     def close(self):
         self._stop.set()
@@ -656,6 +711,7 @@ def main():
             print("Q/E 左右转（松开约 0.3 秒停止转向）  空格速度归零  Esc/Ctrl-C 退出")
             print("T 坐下/站起切换（Enter 启用后使用，切换前速度归零；两次点按请间隔 1 秒以上）。")
             print("C 打开/关闭详细日志：速度、IMU、倾倒计时、策略、电流及原始错误；连接后同时记录电流 CSV。")
+            print("L 行走模式下打开/关闭运行日志：ONNX 文件、策略切换、起身/保护和 robotd 原始日志；不开始电流记录。")
             print("Y 头部模式 / B 身体姿态模式，再按返回行走；切换时速度归零。")
             print("头部：W/S 俯仰、A/D 偏航、I/K 颈部俯仰、J/L 侧倾；身体：W/S 高度、I/K 俯仰、J/L 侧倾。")
             print("姿态按键逐次调整，松开保持；空格同时将当前姿态归零。")
@@ -664,7 +720,7 @@ def main():
             print("终端以按键重复估算长按和松开；R/F/X 松开约 0.3 秒释放，开关类按键两次点按请间隔 1 秒以上。")
             print("H 开启/关闭行走随机讲话；只在速度指令非零时发声，R/F 手动发声期间暂停。")
             print("退出会卸力，请先托住机器人；默认连接还会停止 robotd 服务。")
-            print("主界面只显示当前动作和简短故障；C 查看详情，未连接时也可查看。")
+            print("主界面只显示当前动作和简短故障；C/L 分别开关，未连接时也可查看；头部/身体模式的 L 仍调整侧倾。")
             terminal = sys.stdin.fileno()
             saved = termios.tcgetattr(terminal)
             enabled = False
@@ -690,6 +746,18 @@ def main():
             previous_tick = None
             missing_ticks = 0
             next_display = 0.0
+            next_runtime = 0.0
+            recovery_started = None
+
+            def recovery_keys():
+                if select.select([terminal], [], [], 0)[0]:
+                    for key in os.read(terminal, 64).decode(errors="ignore").lower():
+                        if key in ("\x1b", "\x03"):
+                            raise KeyboardInterrupt
+                        if key == "l" and time.monotonic() - last_keys.get(key, -math.inf) > 1.0:
+                            diagnostics.toggle_runtime()
+                        last_keys[key] = time.monotonic()
+
             for signum in (signal.SIGTERM, signal.SIGHUP):
                 signal.signal(signum, lambda *_: sys.exit(0))
             try:
@@ -713,6 +781,7 @@ def main():
                                 return 0
                             if key == "\n" and pressed:
                                 enabled = False
+                                recovery_started = None
                                 walking_voice.set_moving(False)
                                 velocity = (0.0, 0.0, 0.0)
                                 expires = 0.0
@@ -742,6 +811,7 @@ def main():
                                     health = {}
                                     while time.monotonic() < deadline:
                                         diagnostics.display()
+                                        recovery_keys()
                                         if not connected:
                                             try:
                                                 connect()
@@ -771,21 +841,23 @@ def main():
                                     next_progress = requested_at
                                     while time.monotonic() < deadline:
                                         diagnostics.display()
-                                        if select.select([terminal], [], [], 0)[0]:
-                                            if any(key in os.read(terminal, 64) for key in (27, 3)):
-                                                raise KeyboardInterrupt
+                                        recovery_keys()
                                         read_message()
                                         policy = (latest_state or {}).get("policy")
                                         if policy == "protection" and (saw_standup or time.monotonic() - requested_at > 1.0):
+                                            if ((latest_state or {}).get("safety", {}).get("fall") or {}).get("recovery_failed"):
+                                                raise RuntimeError(STANDUP_FAILED)
                                             raise RuntimeError("保护再次触发，请排除故障后按 Enter 重试")
                                         saw_standup |= policy == "standup"
                                         if saw_standup and policy == "stand":
                                             break
-                                        if diagnostics.verbose and time.monotonic() >= next_progress:
+                                        if (diagnostics.verbose or diagnostics.runtime_verbose) and time.monotonic() >= next_progress:
                                             gravity = (latest_state or {}).get("safety", {}).get("gravity")
                                             print(f"\r\033[K起身 {time.monotonic() - requested_at:.1f}s："
                                                   f"策略={policy}，重力={gravity}（直立时 z 接近 -1）",
                                                   end="", flush=True)
+                                            if diagnostics.runtime_verbose:
+                                                print(f"\r\033[K[运行] {diagnostics.runtime_status()}", flush=True)
                                             next_progress = time.monotonic() + 1.0
                                     else:
                                         safety = (latest_state or {}).get("safety", {})
@@ -803,11 +875,16 @@ def main():
                                         call("robot.relax", {})
                                     connected = False
                                     detail = f"恢复失败：{error} {getattr(error, 'stderr', '') or ''}"
-                                    diagnostics.report(detail, summary=diagnostics.brief_error(detail) or "起身失败，按 Enter 重试")
+                                    diagnostics.report(detail, summary=diagnostics.brief_error(detail) or STANDUP_FAILED)
                                     diagnostics.display()
                                 termios.tcflush(terminal, termios.TCIFLUSH)
                                 last_keys["\n"] = time.monotonic()
                                 break
+                            elif key == "l" and pressed and (mode == "drive" or not connected):
+                                diagnostics.toggle_runtime()
+                                next_runtime = time.monotonic() + 1.0
+                            elif diagnostics.recovery_failed and key != "c":
+                                continue
                             elif not connected and key != "c":
                                 continue
                             elif key == " ":
@@ -899,10 +976,10 @@ def main():
                                               f"缺失拍数 {missing_ticks}", flush=True)
                                     current_status = ""
                                     diagnostics.set_verbose(False)
-                                    print("\r\033[K已返回控制界面。", flush=True)
+                                    print("\r\033[K电流详情已关闭。" if diagnostics.runtime_verbose else "\r\033[K已返回控制界面。", flush=True)
                                 else:
                                     diagnostics.set_verbose(True)
-                                    print("\r\033[K详细日志已开启，再按 C 返回控制界面。", flush=True)
+                                    print("\r\033[K详细日志已开启，再按 C 关闭。", flush=True)
                                     if not connected:
                                         continue
                                     log_dir = Path(args.log_dir).expanduser().resolve()
@@ -1024,6 +1101,35 @@ def main():
                             ])
                     if time.monotonic() >= expires:
                         velocity = (velocity[0], velocity[1], 0.0)
+                    live_state, _ = diagnostics._state
+                    live_state = live_state or {}
+                    live_safety = live_state.get("safety", {})
+                    live_fall = live_safety.get("fall") or {}
+                    recovering = live_fall.get("recovery_active") or live_state.get("policy") == "standup"
+                    if enabled and recovering:
+                        if recovery_started is None:
+                            recovery_started = time.monotonic()
+                        if time.monotonic() - recovery_started >= AUTO_STANDUP_TIMEOUT_S and not diagnostics.recovery_failed:
+                            diagnostics.report(f"自动 StandUp 超过 {AUTO_STANDUP_TIMEOUT_S:g} 秒，已请求卸力", summary=STANDUP_FAILED)
+                            try:
+                                call("robot.relax", {})
+                            except (OSError, ValueError, RuntimeError) as error:
+                                diagnostics.report(f"起身失败，卸力请求失败：{error}", summary="起身失败，卸力请求失败")
+                    elif not live_safety.get("fallen") and (
+                        live_state.get("policy") == "rise"
+                        or (live_state.get("policy") == "walk"
+                            and math.hypot(*live_state.get("move", {}).get("applied", [])) > 0.05)
+                    ):
+                        recovery_started = None
+                    if live_fall.get("recovery_failed"):
+                        diagnostics.recovery_failed = True
+                    if diagnostics.recovery_failed:
+                        enabled = False
+                        roll_until = rt_until = lt_until = 0.0
+                    if recovering or diagnostics.recovery_failed:
+                        velocity = (0.0, 0.0, 0.0)
+                        expires = roll_until = 0.0
+                        mode = "drive"
                     if enabled:
                         send("robot.move", dict(zip(("vx", "vy", "vyaw"), velocity)))
                         if mode == "head":
@@ -1050,6 +1156,9 @@ def main():
                     now = time.monotonic()
                     if current_socket is not None and now - current_received > 0.5:
                         current_status = "电流数据已过期，等待新数据……"
+                    if diagnostics.runtime_verbose and now >= next_runtime:
+                        print(f"\r\033[K[运行] {diagnostics.runtime_status()}", flush=True)
+                        next_runtime = now + 1.0
                     if now >= next_display:
                         voice_status = walking_voice.status
                         if diagnostics.verbose:
