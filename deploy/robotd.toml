@@ -175,6 +175,11 @@ roulade = "/opt/robot/daemon/current/policies/roulade_v2.1.onnx"
 # ground_pick_action_scale = 1.0
 # ground_pick_gain_ratio = 1.0
 
+# G 拾取动作自动嘴部；两个时间均从动作开始计算，单位秒。修改后重启 robotd。
+ground_pick_auto_mouth = true
+ground_pick_mouth_open_s = 0.5
+ground_pick_mouth_close_s = 1.5
+
 # How long a kick window stays on the kick network, seconds.
 # kick_duration = 0.5
 

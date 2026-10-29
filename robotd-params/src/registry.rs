@@ -205,6 +205,21 @@ pub const REGISTRY: &[Entry] = &[
         Kind::Float,
         "Gain multiplier during the ground pick",
     ),
+    entry(
+        "policy.ground_pick_auto_mouth",
+        Kind::Bool,
+        "Automatically open and close the beak during ground pick",
+    ),
+    entry(
+        "policy.ground_pick_mouth_open_s",
+        Kind::Float,
+        "Open the beak this many seconds into ground pick",
+    ),
+    entry(
+        "policy.ground_pick_mouth_close_s",
+        Kind::Float,
+        "Close the beak this many seconds into ground pick",
+    ),
     entry("policy.kick_duration", Kind::Float, "Kick window, seconds"),
     entry(
         "policy.roulade_duration",

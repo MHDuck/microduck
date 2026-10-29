@@ -2555,6 +2555,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
             1.0
         };
 
+        let ground_pick_elapsed = controller.as_ref().and_then(Controller::ground_pick_elapsed);
         let (mut targets, gain, moving, policy_label) = match (driving, sensors.as_ref()) {
             _ if protection.is_some() => (hold, policy_cfg.gain, false, "protection"),
             // The limp-fall sequence, before anything else — `driving` is false throughout,
@@ -2841,6 +2842,16 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                 last_mouth_generation = snapshot.mouth_generation;
                 mouth_only_torqued = false;
             }
+        }
+
+        if policy_cfg.ground_pick_auto_mouth
+            && policy_label == "ground_pick"
+            && let Some(elapsed) = ground_pick_elapsed
+        {
+            let open = elapsed >= policy_cfg.ground_pick_mouth_open_s
+                && elapsed < policy_cfg.ground_pick_mouth_close_s;
+            targets[duck_control::model::MOUTH_INDEX] =
+                duck_control::model::mouth_target(if open { 1.0 } else { 0.0 });
         }
 
         // HD1910 WritePosEx arms the servo (goal torque 980). A limp robot — `--no-policy`,

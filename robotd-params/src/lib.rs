@@ -546,6 +546,9 @@ pub struct PolicyParams {
     pub ground_pick_action_scale: Option<f64>,
     /// Gain multiplier while the ground pick runs.
     pub ground_pick_gain_ratio: f64,
+    pub ground_pick_auto_mouth: bool,
+    pub ground_pick_mouth_open_s: f64,
+    pub ground_pick_mouth_close_s: f64,
     /// How long a kick window stays on the kick network, seconds.
     pub kick_duration: f64,
     /// One roulade — one forward roll, seconds. Holding the button chains rolls; this is
@@ -594,6 +597,9 @@ pub struct ResolvedPolicy {
     pub ground_pick_period: f64,
     pub ground_pick_action_scale: f64,
     pub ground_pick_gain_ratio: f64,
+    pub ground_pick_auto_mouth: bool,
+    pub ground_pick_mouth_open_s: f64,
+    pub ground_pick_mouth_close_s: f64,
     pub kick_duration: f64,
     pub roulade_duration: f64,
     pub roulade_action_scale: f64,
@@ -664,6 +670,9 @@ impl PolicyParams {
             }),
             ground_pick_action_scale: self.ground_pick_action_scale.unwrap_or(1.0),
             ground_pick_gain_ratio: self.ground_pick_gain_ratio,
+            ground_pick_auto_mouth: self.ground_pick_auto_mouth,
+            ground_pick_mouth_open_s: self.ground_pick_mouth_open_s,
+            ground_pick_mouth_close_s: self.ground_pick_mouth_close_s,
             kick_duration: self.kick_duration,
             roulade_duration: self.roulade_duration,
             roulade_action_scale: self.roulade_action_scale,
@@ -760,6 +769,9 @@ impl Default for PolicyParams {
             ground_pick_period: None,
             ground_pick_action_scale: None,
             ground_pick_gain_ratio: 1.0,
+            ground_pick_auto_mouth: false,
+            ground_pick_mouth_open_s: 0.5,
+            ground_pick_mouth_close_s: 1.5,
             kick_duration: 0.5,
             roulade_duration: 1.0,
             roulade_action_scale: 1.0,
@@ -1051,6 +1063,8 @@ pub enum ParamsError {
     Rate { path: String, got: u32 },
     #[error("{path}: invalid safety configuration: {reason}")]
     Safety { path: String, reason: &'static str },
+    #[error("{path}: policy ground-pick mouth times must be finite, with 0 <= ground_pick_mouth_open_s < ground_pick_mouth_close_s")]
+    GroundPickMouth { path: String },
     #[error(
         "{path}: media.bitrate must be between {min} and {max} bits per second, got {got} — \
          the unit is bits, so 2 Mb/s is 2000000"
@@ -1131,6 +1145,15 @@ impl Params {
     /// Reject values that would produce a loop that cannot work, at startup rather than as
     /// a division by zero three seconds later.
     fn validate(&self, path: &Path) -> Result<(), ParamsError> {
+        if !self.policy.ground_pick_mouth_open_s.is_finite()
+            || !self.policy.ground_pick_mouth_close_s.is_finite()
+            || self.policy.ground_pick_mouth_open_s < 0.0
+            || self.policy.ground_pick_mouth_close_s <= self.policy.ground_pick_mouth_open_s
+        {
+            return Err(ParamsError::GroundPickMouth {
+                path: path.display().to_string(),
+            });
+        }
         let safety_error = if !self.safety.overcurrent_cutoff_a.is_finite()
             || self.safety.overcurrent_cutoff_a <= 0.0
         {
