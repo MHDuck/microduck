@@ -122,11 +122,11 @@ gain = 5
 mode = "walk"
 walk = "/opt/robot/daemon/current/policies/walk_flat_back_v2.onnx"
 stand = "/opt/robot/daemon/current/policies/standup_hd1910_v6.onnx"
-sitstand = "/opt/robot/daemon/current/policies/sitstand_v3.onnx"
+sitstand = "/opt/robot/daemon/current/policies/sitstand_v2.6.onnx"
 ground_pick = "/opt/robot/daemon/current/policies/ground_pick_hd1910_v2.onnx"
 kick_left = "none"
 kick_right = "/opt/robot/daemon/current/policies/kick_right_v2.1.onnx"
-roulade = "/opt/robot/daemon/current/policies/roulade_hd1910_v2.onnx"
+roulade = "/opt/robot/daemon/current/policies/roulade_v2.1.onnx"
 # Policy files. Unset means the mode's default inside the release directory, so an ordinary
 # update carries the policies alongside the binaries that were trained against them. Point
 # one at your own .onnx to try a build without cutting a release — the loop anyone
