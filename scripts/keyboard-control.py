@@ -603,6 +603,8 @@ def main():
     parser.add_argument("--speech-dir", default="/home/radxa/microduck-speech/current")
     parser.add_argument("--speech-python", help="独立语音环境Python，默认speech-dir/.venv/bin/python")
     parser.add_argument("--speech-device", default="plughw:microducki2s3,0")
+    parser.add_argument("--speech-gain", type=float, default=1., help="与recognize.py --gain对应，默认1")
+    parser.add_argument("--speech-threshold", type=float, default=.35, help="与recognize.py --threshold对应，默认.35")
     args = parser.parse_args()
     if termios is None or tty is None:
         parser.error("keyboard-control.py 只能在 Linux/WSL/板端终端运行")
@@ -790,7 +792,9 @@ def main():
                         module = importlib.util.module_from_spec(spec)
                         spec.loader.exec_module(module)
                         speech = module.SpeechInput(args.speech, args.speech_dir,
-                                                    args.speech_python, args.speech_device)
+                                                    args.speech_python, args.speech_device,
+                                                    gain=args.speech_gain, threshold=args.speech_threshold,
+                                                    report=lambda line: print(f"\r\033[K{line}", flush=True))
                         speech.start()
                         print("语音已启动；仍须人工按 Enter 起身。语音不能使能/重启或触发其它技能。", flush=True)
                     except (OSError, ValueError, RuntimeError, ImportError, AttributeError) as error:
@@ -1128,9 +1132,7 @@ def main():
                     live_state = live_state or {}
                     if speech is not None:
                         packets = speech.poll()
-                        if manual_input:
-                            packets = [p for p in packets if p.get("kind") == "audio_heartbeat"]
-                        intent = speech.decide(packets, time.monotonic(), enabled=enabled,
+                        intent = speech.decide(packets, time.monotonic(), manual_input=manual_input, enabled=enabled,
                                                mode=mode, state=live_state, state_at=live_at, velocity=velocity)
                         if intent in ("stop", "stop_for_sit", "sit", "rise"):
                             velocity = (0.0, 0.0, 0.0)

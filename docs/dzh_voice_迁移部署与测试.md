@@ -182,6 +182,38 @@ master之后有新提交时，只在保存干净的dzh_voice执行`git fetch ori
 
 ## 本轮本机验证结果
 
+### 接键盘后无识别输出/似乎成功率低：日志修复
+
+已确认此前状态栏右侧被裁切、心跳覆盖识别词，且门控拒绝未说明原因。独立测试成功率高来自用户实测；
+尚无板端日志证明两种入口的底层KWS识别率真的不同，不盲改模型/阈值/保护。
+新版逐条输出`[语音识别] 前进 intent=walk age=...`和`[语音决策] 前进 -> ...；原因`。
+preview无需Enter即可看识别；on仍必须人工Enter使能、站稳并零速2秒。
+若报姿态/状态/音频过期，先按日志排查，勿靠反复喊或下调安全门限绕过。
+
+这次只需更新两份代码，不需要重编译Rust、重传识别权重或重生成关键词：
+
+```bash
+# 电脑WSL，位于部署仓库根目录
+scp scripts/keyboard-control.py speech/keyboard_input.py radxa@192.168.2.70:/tmp/
+```
+
+板端先托住机器人、退出旧键盘与独立recognize（勿让两个识别进程抢麦克风），然后：
+
+```bash
+sudo install -m 644 /tmp/keyboard-control.py /opt/robot/daemon/current/scripts/keyboard-control.py
+sudo install -m 644 /tmp/keyboard_input.py /home/radxa/microduck-speech/current/keyboard_input.py
+
+sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py --speech preview \
+  --speech-dir /home/radxa/microduck-speech/current --speech-gain 1 --speech-threshold .35
+```
+
+每说一个词应出现完整日志行，不依赖C/L或终端宽度。随后托住退出，再启动`--speech on`，
+人工Enter完成后，等待零速2秒再说前进/后退；观察是没识别、识别被拒绝，还是请求发出但实机不执行。
+若仍没有`[语音识别]`，先核对启动打印的目录是否就是独立测试目录（`pwd -P`），Python是否为同一`.venv`；
+用同一设备、gain、threshold做sudo独立识别对照。重启robotd后CPU/麦克风占用、机械噪声差异尚待板端排查。
+Windows36项33通过/3平台跳过，Linux36项34通过/2依赖跳过，master键盘4项通过；
+含“词后紧跟心跳”、可见拒绝原因、过期/键盘优先、真实假KWS+PTY集成。未在本轮板端实测识别率。
+
 ### 2026-10-29 短口令与后退更新
 
 关键词改为前进/后退/停止/坐下/起来，移除旧“鸭子”前缀；新增backward输入，默认-0.10m/s，

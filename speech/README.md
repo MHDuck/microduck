@@ -38,7 +38,7 @@ sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py --speech on \
   --speech-dir /home/radxa/microduck-speech/current
 ```
 
-`--speech preview`只识别打印到状态栏，不发送语音动作；`--speech off`完全不加载识别模块、不启动子进程、
+`--speech preview`逐条打印识别结果和“仅预览”决策，不发送语音动作；`--speech off`完全不加载识别模块、不启动子进程、
 不访问麦克风，与master键盘路径一致。`--walk-voice`/H是播放大笑，与本开关无关。
 
 旧dzh的`control.py/robot_bridge.py`没有迁入：它们是独立运动控制器，不适合与新master键盘并行。
@@ -51,6 +51,17 @@ C/L/H日志和发声键不取消语音限时。语音不能使能/重启/关机/
 音频心跳0.8秒/状态0.5秒过期、识别退出会停止其拥有的行走，但不干预之后接管的手动指令。
 起立、切网、自动恢复与卸力严格走master：语音不另设动作完成时长、不重试toggle。
 默认键盘退出会卸力并停止robotd，退出前托住机器人。
+
+### 识别成功但接键盘后看不到/动作很少（2026-10-29修复）
+
+旧界面只把识别词放在状态栏右侧，既会被终端宽度裁掉，又会被随后的心跳覆盖；动作门控拒绝也无原因。
+现在每次口令输出`[语音识别]`和`[语音决策]`，预览/未使能/零速等待/姿态或状态过期等均明确显示。
+心跳不再覆盖最近3秒识别词；过期/重复/键盘优先丢弃也输出，不把拒绝执行说成“没识别”。
+启动打印解析后的speech目录、Python、音频设备、gain和threshold，检查是否与独立测试使用同一发布目录/环境。
+两种入口默认都为ALSA同设备、gain=1、threshold=.35；不因“动作少”自动降低阈值或取消安全检查。
+可用`--speech-gain 1 --speech-threshold .35`与独立`recognize.py --gain 1 --threshold .35`保持一致。
+积压管道按有界批次排空，但Enter重启/起身期间的过期口令仍丢弃，完成后重新说，不自动执行旧口令。
+打印“提交速度/请求”只表示发给master，不代表实机已完成动作；拒绝/保护仍以daemon反馈为准。
 
 如果麦克风忙，用`arecord -l`核对设备，先关闭占用该输入的客户端；本脚本不自动停止mediad等服务。
 模型manifest是本地完整性校验，不宣称上游独立签名验证。需要离线准备可用`prepare.py --archive 官方包.tar.bz2`。

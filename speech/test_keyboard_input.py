@@ -39,6 +39,54 @@ class GuardTests(unittest.TestCase):
     def test_constructor_and_import_do_not_start_process(self):
         self.assertIsNone(self.voice.process)
 
+    def test_keyword_followed_by_heartbeat_is_logged_and_not_overwritten(self):
+        self.voice.mode = "preview"
+        packets = [event(10., "walk"), {"kind": "audio_heartbeat", "monotonic_s": 10.}]
+        self.assertIsNone(self.voice.decide(packets, 10., enabled=False, mode="drive",
+                          state={}, state_at=0., velocity=(0., 0., 0.)))
+        self.assertEqual(self.voice.status, "前进")
+        text = '\n'.join(self.voice.messages)
+        self.assertIn('[语音识别] 前进', text)
+        self.assertIn('preview仅识别', text)
+        self.decide(10.5)
+        self.assertEqual(self.voice.status, "前进")
+
+    def test_unarmed_and_dwell_rejections_are_visible(self):
+        self.decide(1., "walk", enabled=False)
+        self.assertIn('人工按Enter', '\n'.join(self.voice.messages))
+        self.decide(2., "walk")
+        self.assertIn('零速等待2秒', '\n'.join(self.voice.messages))
+        self.decide(4.1, "walk")
+        self.assertIn('walk；提交速度', '\n'.join(self.voice.messages))
+
+    def test_manual_priority_and_expired_events_are_observable_not_executed(self):
+        kwargs = dict(enabled=True, mode="drive", state=state(4.), state_at=4., velocity=(0., 0., 0.))
+        self.assertIsNone(self.voice.decide([event(4., "sit")], 4., manual_input=True, **kwargs))
+        self.assertIsNone(self.voice.pending_sit)
+        self.assertIn('键盘输入优先', '\n'.join(self.voice.messages))
+        self.assertIsNone(self.voice.decide([event(1., "walk")], 4., **kwargs))
+        self.assertIn('事件过期', '\n'.join(self.voice.messages))
+
+    def test_audio_fault_and_state_rejections_have_separate_reasons(self):
+        self.voice.audio_at = None
+        self.voice.decide([event(1., "walk")], 1., enabled=True, mode="drive",
+                          state=state(1.), state_at=1., velocity=(0., 0., 0.))
+        self.assertIn('音频心跳过期', self.voice.reason)
+        self.decide(2., "walk", state_at=0.)
+        self.assertIn('robot.state过期', self.voice.reason)
+
+    def test_start_forwards_matching_gain_threshold_and_reports_resolved_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            messages = []
+            voice = SpeechInput('preview', directory, '/usr/bin/python3', gain=1.2, threshold=.4, report=messages.append)
+            with patch('keyboard_input.subprocess.Popen') as popen:
+                voice.start()
+            command = popen.call_args.args[0]
+            self.assertEqual(command[command.index('--gain')+1], '1.2')
+            self.assertEqual(command[command.index('--threshold')+1], '0.4')
+            self.assertIn(str(Path(directory).resolve()), messages[0])
+            self.assertIn('mode=preview', messages[0])
+
     def test_off_is_not_a_recognizer(self):
         with self.assertRaises(ValueError):
             SpeechInput("off", ".")
