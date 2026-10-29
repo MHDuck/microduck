@@ -69,7 +69,7 @@ sh setup.sh
 .venv/bin/python recognize.py --seconds 30
 ```
 
-确认四个口令命中、设备正确，再切换软链接（仅管理软链接，不覆盖实体目录）：
+确认五个口令命中、设备正确，再切换软链接（仅管理软链接，不覆盖实体目录）：
 
 ```bash
 cd /home/radxa/microduck-speech
@@ -108,7 +108,7 @@ sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py --speech prev
   --speech-dir /home/radxa/microduck-speech/current
 ```
 
-说四个关键词，状态栏应显示识别结果；**仅说话不应产生任何动作**。
+说“前进、后退、停止、坐下、起来”，状态栏应显示识别结果；**仅说话不应产生任何动作**。
 键盘仍可人工Enter及正常控制。确认识别失败/麦克风缺失时仅提示降级，不影响纯键盘。
 这里的preview不会禁止人工键盘动作，只禁止语音驱动。
 
@@ -123,10 +123,11 @@ sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py --speech on \
 
 | 输入 | 预期 |
 |---|---|
-| 鸭子前进 | 三轴设为(0.10,0,0)，最多3秒自动停车；再次从静止启动仍等2秒 |
-| 鸭子停止 | 清三轴；也可停止键盘输入的速度，不取消已开始的技能 |
-| 鸭子坐下 | 先停车，零速至少2秒，调用一次与T相同的sit_toggle |
-| 鸭子起来 | 当前policy=sit才调用一次sit_toggle；已经站立不重复切换 |
+| 前进 | 三轴设为(0.10,0,0)，最多3秒自动停车；再次从静止启动仍等2秒 |
+| 后退 | 三轴设为(-0.10,0,0)，最多3秒自动停车；换向先停止并等2秒 |
+| 停止 | 清三轴；也可停止键盘输入的速度，不取消已开始的技能 |
+| 坐下 | 先停车，零速至少2秒，调用一次与T相同的sit_toggle |
+| 起来 | 当前policy=sit才调用一次sit_toggle；已经站立不重复切换 |
 | 键盘运动/姿态/安全键 | 立即接管、取消语音待坐和行走租约；之后手动速度按master锁存 |
 | C/L/H | 日志/播放开关不取消语音行走3秒限制 |
 
@@ -180,6 +181,31 @@ master之后有新提交时，只在保存干净的dzh_voice执行`git fetch ori
 `git push origin dzh_voice:master`；若非快进让Git拒绝，不用`--force`。本轮没有执行任何远端push或修改master。
 
 ## 本轮本机验证结果
+
+### 2026-10-29 短口令与后退更新
+
+关键词改为前进/后退/停止/坐下/起来，移除旧“鸭子”前缀；新增backward输入，默认-0.10m/s，
+沿用前进的3秒限时/零速2秒等待/失联停车。master动作逻辑、安全与默认speech off不改。
+关键词缩短后误触发风险更高，先preview，不自动降低识别阈值。同一音频批出现前进和后退时停车。
+
+必须重新生成关键词token和manifest，不需重训或重新导出运动模型；无需Rust重编译。
+先退出旧键盘/识别进程（退出前托住），在电脑端执行：
+
+```bash
+# 本地Windows独立语音环境（PowerShell）；使用已有模型包，不重下载权重
+speech/.venv/Scripts/python.exe speech/prepare.py
+speech/.venv/Scripts/python.exe speech/recognize.py --check
+```
+
+然后WSL执行`sh xh_push.sh radxa@192.168.2.70`更新键盘脚本（已安装本分支master二进制时无需build），
+`sh speech/sync.sh radxa@192.168.2.70`上传新版语音工程；按第2节对新目录运行setup/check/预览后切换current。
+也可在Linux独立语音环境用`.venv/bin/python prepare.py`生成。**不能只更新keywords_raw.txt就直接运行**。
+板端先preview确认五词都命中，on模式人工Enter后逐个验证：前进/停止、后退/停止、坐下/起来；
+测后退3秒停车、前后换向零速等待、键盘接管和断流停车。旧master/dzh分支均不修改。
+本轮Windows独立环境31项中28通过/3平台跳过，Linux31项中29通过/2依赖跳过；
+另master键盘4项通过。已重新生成五词token/manifest并通过真实KWS加载；尚未上传或实测麦克风/机器人动作。
+
+### 初次迁移记录
 
 - Linux：master键盘/声音/视觉/standup脚本19项通过；speech整组28项中26通过、2缺依赖跳过，
   包括真实假识别子进程、preview/on两种启动方式与master键盘伪终端共存。未使用麦克风或机器人。

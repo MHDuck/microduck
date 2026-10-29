@@ -20,7 +20,7 @@ def state(now, policy="stand", **safety):
 
 
 def event(now, intent):
-    word = {"walk": "鸭子前进", "stop": "鸭子停止", "sit": "鸭子坐下", "rise": "鸭子起来"}[intent]
+    word = {"walk": "前进", "backward": "后退", "stop": "停止", "sit": "坐下", "rise": "起来"}[intent]
     return {"keyword": word, "intent": intent, "preview_only": True, "monotonic_s": now}
 
 
@@ -45,7 +45,7 @@ class GuardTests(unittest.TestCase):
 
     def test_preview_never_controls(self):
         self.voice.mode = "preview"
-        for intent in ("walk", "sit", "rise", "stop"):
+        for intent in ("walk", "backward", "sit", "rise", "stop"):
             self.assertIsNone(self.decide(10., intent))
 
     def test_voice_cannot_enable_and_needs_zero_dwell(self):
@@ -59,6 +59,37 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(self.decide(6.2, velocity=(.1, 0., 0.)), "stop")
         self.assertEqual(self.voice.decide([event(7., "walk"), event(7., "stop")], 7., enabled=True,
                          mode="drive", state=state(7.), state_at=7., velocity=(0., 0., 0.)), "stop")
+
+    def test_backward_direction_limits_and_manual_takeover(self):
+        self.assertIsNone(self.decide(1., "backward", enabled=False))
+        self.decide(2.)
+        self.assertEqual(self.decide(4.1, "backward"), "backward")
+        self.assertEqual(self.voice.velocity_for("backward"), (-.1, 0., 0.))
+        self.assertEqual(self.voice.velocity_for("walk"), (.1, 0., 0.))
+        self.assertEqual(self.decide(7.2, velocity=(-.1, 0., 0.)), "stop")
+        self.voice.owns_walk = True
+        self.voice.cancel()
+        self.assertIsNone(self.decide(8., velocity=(-.2, 0., 0.)))
+
+    def test_backward_needs_stopped_dwell_and_fault_stops_it(self):
+        self.assertIsNone(self.decide(1., "backward", velocity=(.1, 0., 0.)))
+        self.decide(2.)
+        self.assertIsNone(self.decide(3., "backward"))
+        self.assertEqual(self.decide(4.1, "backward"), "backward")
+        self.voice.failed = True
+        self.assertEqual(self.decide(4.2, velocity=(-.1, 0., 0.)), "stop")
+
+    def test_conflicting_directions_stop_and_keyword_contract_matches(self):
+        import recognize
+        from keyboard_input import KEYWORDS
+        self.assertEqual(KEYWORDS, recognize.COMMANDS)
+        words = [line.split(' @') for line in Path(__file__).with_name('keywords_raw.txt').read_text(encoding='utf-8').splitlines()]
+        self.assertEqual({word for word, tag in words}, set(KEYWORDS))
+        self.assertTrue(all(word == tag for word, tag in words))
+        self.decide(1.)
+        self.voice.audio_at = 4.
+        self.assertEqual(self.voice.decide([event(4., "walk"), event(4., "backward")], 4., enabled=True,
+                         mode="drive", state=state(4.), state_at=4., velocity=(0., 0., 0.)), "stop")
 
     def test_sit_stops_then_waits_two_seconds(self):
         self.assertEqual(self.decide(1., "sit", velocity=(.1, 0., 0.)), "stop_for_sit")
@@ -153,7 +184,7 @@ class ProcessTests(unittest.TestCase):
                 Path(directory, "recognize.py").write_text(
                     'import json,time\nwhile True:\n t=time.monotonic()\n'
                     ' print(json.dumps({"kind":"audio_heartbeat","monotonic_s":t}),flush=True)\n'
-                    ' print(json.dumps({"keyword":"鸭子前进","intent":"walk","preview_only":True,"monotonic_s":t}),flush=True)\n'
+                    ' print(json.dumps({"keyword":"前进","intent":"walk","preview_only":True,"monotonic_s":t}),flush=True)\n'
                     ' time.sleep(.2)\n', encoding="utf-8")
                 def popen(command, *args, **kwargs):
                     if str(module.keyboard_control.__file__) in command:

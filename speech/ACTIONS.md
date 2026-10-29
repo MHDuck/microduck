@@ -1,6 +1,7 @@
 # 语音动作接入（当前入口）
 
 现在只通过master键盘程序的`--speech off|preview|on`接入。默认off。
+关键词为“前进、后退、停止、坐下、起来”，不再需要“鸭子”前缀。前/后退分别±0.10m/s，最多3秒。
 完整命令见[迁移部署与测试](../docs/dzh_voice_迁移部署与测试.md)。
 
 不要再运行旧dzh的`speech/control.py --execute`，也不要把旧Rust控制器覆盖回本分支。

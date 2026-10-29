@@ -1136,8 +1136,8 @@ def main():
                             velocity = (0.0, 0.0, 0.0)
                             roll_until = 0.0
                             call("robot.stop", {})
-                        if intent == "walk":
-                            velocity = (.10, 0.0, 0.0)
+                        if intent in ("walk", "backward"):
+                            velocity = speech.velocity_for(intent)
                         elif intent in ("sit", "rise"):
                             call("robot.do", {"skill": "sit_toggle"}, allow_refusal=True)
                         # No policy selection/enable/recovery timing in the speech adapter.

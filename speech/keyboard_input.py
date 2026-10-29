@@ -1,6 +1,6 @@
 """Optional KWS input for the MASTER keyboard loop. No robot socket or RPC.
 
-Only returns walk/stop/sit/rise intents; master owns enabling, recovery,
+Only returns walk/backward/stop/sit/rise intents; master owns enabling, recovery,
 policy transitions and safety. Importing this module starts nothing.
 """
 import json
@@ -12,7 +12,7 @@ import select
 import subprocess
 import time
 
-KEYWORDS = {"鸭子前进": "walk", "鸭子停止": "stop", "鸭子坐下": "sit", "鸭子起来": "rise"}
+KEYWORDS = {"前进": "walk", "后退": "backward", "停止": "stop", "坐下": "sit", "起来": "rise"}
 
 
 def finite(value):
@@ -82,6 +82,10 @@ class SpeechInput:
         self.owns_walk = False
         self.pending_sit = None
         self.zero_since = None
+
+    @staticmethod
+    def velocity_for(intent):
+        return {"walk": (.10, 0., 0.), "backward": (-.10, 0., 0.)}[intent]
 
     def decide(self, packets, now, *, enabled, mode, state, state_at, velocity):
         """At most ONE intent per tick. No enable, restart, relax or skill timer."""
@@ -167,9 +171,13 @@ class SpeechInput:
         if "rise" in events and policy == "sit":
             self.pose_until = now + 1.5
             return "rise"
-        if "walk" in events and policy in ("walk", "stand") and self.zero_since is not None and now - self.zero_since >= 2.:
+        moves = [intent for intent in events if intent in ("walk", "backward")]
+        if len(set(moves)) > 1:
+            self.cancel()
+            return "stop"  # conflicting directions in one audio batch must not pick arbitrarily
+        if moves and policy in ("walk", "stand") and self.zero_since is not None and now - self.zero_since >= 2.:
             self.owns_walk, self.walk_until = True, now + 3.
-            return "walk"
+            return moves[-1]
         return None
 
     def close(self):

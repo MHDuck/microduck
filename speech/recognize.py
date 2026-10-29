@@ -14,7 +14,7 @@ import wave
 
 from prepare import ROOT, catalog, verify
 
-COMMANDS = {"鸭子前进": "walk", "鸭子停止": "stop", "鸭子坐下": "sit", "鸭子起来": "rise"}
+COMMANDS = {"前进": "walk", "后退": "backward", "停止": "stop", "坐下": "sit", "起来": "rise"}
 
 
 def pcm16(data, channels=1, channel=0, gain=1.0):

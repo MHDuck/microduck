@@ -69,10 +69,12 @@ class SpeechTests(unittest.TestCase):
         p = recognize.Preview()
         self.assertIsNone(p.event("走", 0.))
         self.assertIsNone(p.event("未知", 0.))
-        self.assertEqual(p.event("鸭子前进", 0.)["intent"], "walk")
-        self.assertIsNone(p.event("鸭子前进", 1.))
-        self.assertEqual(p.event("鸭子停止", 1.)["intent"], "stop")
-        self.assertTrue(p.event("鸭子前进", 2.)["preview_only"])
+        self.assertEqual(p.event("前进", 0.)["intent"], "walk")
+        self.assertIsNone(p.event("前进", 1.))
+        self.assertEqual(p.event("停止", 1.)["intent"], "stop")
+        self.assertTrue(p.event("前进", 2.)["preview_only"])
+        self.assertEqual(p.event("后退", 2.)["intent"], "backward")
+        self.assertIsNone(p.event("鸭子前进", 4.))
 
     @unittest.skipUnless(importlib.util.find_spec("numpy"), "Install independent speech requirements for PCM tests")
     def test_pcm_conversion_channel_gain_and_bounds(self):
