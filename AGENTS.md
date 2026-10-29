@@ -1,5 +1,11 @@
 # Local HD1910 deployment rules
 
+- Active development branch is `dzh_voice`, based on origin/master `7caaae8` (2026-10-29).
+  Do not switch/edit/merge into local `master` or `dzh` without explicit user authorization.
+  Task transitions, motor configuration, safety and model choices follow master;
+  voice is an opt-in INPUT adapter to its keyboard loop, never a second robot controller.
+  `--speech off` is the default: no recognizer import/process or microphone access.
+
 This checkout is the deployment half of `F:\Code\microduck_code`. Before editing it, read
 `docs/LOCAL_CUSTOMIZATIONS.md` and the sibling training repo's `docs/AI_HANDOFF.md`.
 

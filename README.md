@@ -1,5 +1,9 @@
 # Microduck · HD1910 + BNO085
 
+当前开发分支为 **dzh_voice**：基于墨恒master `7caaae8`，保留其任务衔接，增加默认关闭的中文语音输入。
+完整构建、同步板端、键盘/语音测试和合并方式见[迁移部署与测试](docs/dzh_voice_迁移部署与测试.md)。
+不传`--speech`即原master键盘；`--speech on`才开启识别控制，仍须人工Enter起身。
+
 **基于强化学习的小型双足机器人运行时，适配飞特 HD1910 舵机与 I²C BNO085 IMU。**
 
 **简体中文** | [English](README.en.md)

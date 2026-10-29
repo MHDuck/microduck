@@ -1,0 +1,6 @@
+.venv/
+models/
+downloads/
+dist/
+__pycache__/
+*.jsonl

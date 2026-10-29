@@ -1,0 +1,9 @@
+# Independent from robotd / the training environment; do not install globally.
+sherpa-onnx==1.13.8
+# Preserve the verified 3.11/3.12 environment. NumPy 1.26 has no cp313 wheels.
+numpy==1.26.4; python_version < "3.13"
+numpy==2.2.6; python_version >= "3.13"
+pypinyin==0.55.0
+sounddevice==0.5.3
+click==8.1.8
+sentencepiece==0.2.1

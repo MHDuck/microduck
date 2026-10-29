@@ -1,0 +1,11 @@
+# 语音动作接入（当前入口）
+
+现在只通过master键盘程序的`--speech off|preview|on`接入。默认off。
+完整命令见[迁移部署与测试](../docs/dzh_voice_迁移部署与测试.md)。
+
+不要再运行旧dzh的`speech/control.py --execute`，也不要把旧Rust控制器覆盖回本分支。
+语音只产生意图，由同一键盘循环写入速度和调用与T相同的`robot.do sit_toggle`。
+按Enter的重启/StandUp流程、T坐站衔接、自动倒地恢复与安全保护全部沿用master。
+
+测试顺序：纯键盘→纯识别→键盘+识别预览→开启语音动作→断流/重复口令/人工接管回归。
+未确认正常前不要把新分支合入master，不要设置开机自动使能。

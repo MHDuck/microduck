@@ -1,5 +1,15 @@
 # HD1910 本地部署增量（2026-10-20）
 
+## 2026-10-29 当前基线：dzh_voice
+
+当前从远端master `7caaae8`新建dzh_voice，原dzh/master引用未改；旧未提交现场已stash和快照保存。
+后续以dzh_voice开发，master动作衔接/模型/增益/安全保持。本次只迁入独立语音识别与默认关闭的键盘输入适配，
+不迁旧动作任务或SitStand 3.5秒字段。非动作功能已有者（大笑、独立嘴部、相机）保留最新master实现。
+启动`--speech off|preview|on`，默认off不启动识别/不访问麦克风；on仍由人工Enter触发master StandUp。
+语音只接前进/停止/坐起，共用键盘RPC循环，不另启动旧独立动作桥，无自动使能/重连/策略计时。
+备份、逐项范围、完整部署/测试/未来合并见[dzh_voice迁移部署](dzh_voice_迁移部署与测试.md)。
+下方历史文档中的旧路径/测试说明仅是历史记录，当前使用此入口与master实际配置。
+
 本工程从墨恒 Gitee `microduck_rust` 的最新 `master` 克隆，迁移时基线为 `2f9c655`。保留
 `origin` 与完整 Git 历史；本地功能只叠加在该基线上。旧目录 `F:\Code\microduck_rust`
 仅作为历史对照，不再直接部署。

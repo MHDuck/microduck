@@ -598,6 +598,11 @@ def main():
                         help="两段声音的最长间隔秒数，默认 0。")
     parser.add_argument("--voice-sound-only", action="store_true",
                         help="行走发声时只播放声音，不控制嘴部。")
+    parser.add_argument("--speech", choices=("off", "preview", "on"), default="off",
+                        help="中文口令：默认off完全沿用master键盘；preview仅识别；on与键盘共用master控制循环。")
+    parser.add_argument("--speech-dir", default="/home/radxa/microduck-speech/current")
+    parser.add_argument("--speech-python", help="独立语音环境Python，默认speech-dir/.venv/bin/python")
+    parser.add_argument("--speech-device", default="plughw:microducki2s3,0")
     args = parser.parse_args()
     if termios is None or tty is None:
         parser.error("keyboard-control.py 只能在 Linux/WSL/板端终端运行")
@@ -777,8 +782,25 @@ def main():
             for signum in (signal.SIGTERM, signal.SIGHUP):
                 signal.signal(signum, lambda *_: sys.exit(0))
             try:
+                speech = None
+                if args.speech != "off":
+                    try:
+                        path = Path(args.speech_dir).expanduser() / "keyboard_input.py"
+                        spec = importlib.util.spec_from_file_location("duck_speech_input", path)
+                        module = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(module)
+                        speech = module.SpeechInput(args.speech, args.speech_dir,
+                                                    args.speech_python, args.speech_device)
+                        speech.start()
+                        print("语音已启动；仍须人工按 Enter 起身。语音不能使能/重启或触发其它技能。", flush=True)
+                    except (OSError, ValueError, RuntimeError, ImportError, AttributeError) as error:
+                        if speech is not None:
+                            speech.close()
+                        speech = None
+                        print(f"语音启动失败，继续纯键盘：{error}", flush=True)
                 tty.setcbreak(terminal)
                 while True:
+                    manual_input = False
                     diagnostics.display()
                     inputs = [terminal] + ([current_socket] if current_socket is not None else [])
                     readable, _, _ = select.select(inputs, [], [], 0.05)
@@ -786,6 +808,9 @@ def main():
                         keys = os.read(terminal, 64)
                         if not keys:
                             break
+                        if speech is not None and any(key.lower() not in "clh" for key in keys.decode(errors="ignore")):
+                            speech.cancel()  # physical input always owns the same master loop
+                            manual_input = True
                         for key in keys.decode(errors="ignore").lower():
                             if key == "\r":
                                 key = "\n"
@@ -1099,8 +1124,23 @@ def main():
                                 *values, missing_ticks, state["policy"], limits, *movement["requested"], *phases,
                                 sample.get("input_abs_a", "") if valid else "",
                             ])
-                    live_state, _ = diagnostics._state
+                    live_state, live_at = diagnostics._state
                     live_state = live_state or {}
+                    if speech is not None:
+                        packets = speech.poll()
+                        if manual_input:
+                            packets = [p for p in packets if p.get("kind") == "audio_heartbeat"]
+                        intent = speech.decide(packets, time.monotonic(), enabled=enabled,
+                                               mode=mode, state=live_state, state_at=live_at, velocity=velocity)
+                        if intent in ("stop", "stop_for_sit", "sit", "rise"):
+                            velocity = (0.0, 0.0, 0.0)
+                            roll_until = 0.0
+                            call("robot.stop", {})
+                        if intent == "walk":
+                            velocity = (.10, 0.0, 0.0)
+                        elif intent in ("sit", "rise"):
+                            call("robot.do", {"skill": "sit_toggle"}, allow_refusal=True)
+                        # No policy selection/enable/recovery timing in the speech adapter.
                     live_safety = live_state.get("safety", {})
                     live_fall = live_safety.get("fall") or {}
                     recovering = live_fall.get("recovery_active") or live_state.get("policy") == "standup"
@@ -1151,6 +1191,8 @@ def main():
                     if mode != "drive" and status in ("站立中", "行走中"):
                         status = {"head": "头部控制中", "body": "身体姿态控制中"}[mode]
                     status = f"{velocity_status(velocity)} | {status}"
+                    if speech is not None:
+                        status += f" | 语音:{speech.status}"
                     now = time.monotonic()
                     if current_socket is not None and now - current_received > 0.5:
                         current_status = "电流数据已过期，等待新数据……"
@@ -1177,6 +1219,12 @@ def main():
                         print(f"\r\033[K{visible}", end="", flush=True)
                         next_display = now + 0.2
             finally:
+                if speech is not None:
+                    if speech.owns_walk:
+                        with suppress(OSError, ValueError, RuntimeError):
+                            call("robot.stop", {})
+                    with suppress(OSError, subprocess.SubprocessError):
+                        speech.close()
                 walking_voice.close()
                 for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                     signal.signal(signum, signal.SIG_IGN)
