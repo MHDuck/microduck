@@ -58,6 +58,22 @@ def is_walking(enabled, velocity):
     return enabled and any(abs(component) > 1e-3 for component in velocity)
 
 
+def adjust_velocity(velocity, key):
+    axis, step, limit = {
+        "w": (0, 0.10, 0.40), "s": (0, -0.10, 0.40),
+        "a": (1, 0.10, 0.40), "d": (1, -0.10, 0.40),
+        "q": (2, 0.10, 0.30), "e": (2, -0.10, 0.30),
+    }[key]
+    values = list(velocity)
+    values[axis] = max(-limit, min(limit, round(values[axis] + step, 2)))
+    return tuple(values)
+
+
+def velocity_status(velocity):
+    vx, vy, vtheta = velocity
+    return f"指令 VX={vx:+.2f} VY={vy:+.2f} m/s VTHETA={vtheta:+.2f} rad/s"
+
+
 def choose_emotion(emotions, previous, rng):
     choices = [name for name in emotions if name != previous] or list(emotions)
     return rng.choice(choices)
@@ -362,9 +378,10 @@ class RobotdDiagnostics:
             return "倾倒保护了"
         if "overcurrent protection latched" in lower or "过流保护已锁定" in message:
             return "电机过流保护了"
-        motor = re.search(r"\b(?:servo|motor|ping)\s+(?:id[=: ]*)?(\d+)\b|\b(?:read|write) reg \d+ on (\d+)\b", lower)
-        if motor:
-            return f"{next(group for group in motor.groups() if group)} 电机无响应"
+        motors = re.findall(r"\b(?:servo|motor|ping)\s+(?:id[=: ]*)?(\d+)\b|\b(?:read|write) reg \d+ on (\d+)\b", lower)
+        if motors:
+            ids = dict.fromkeys(next(group for group in match if group) for match in motors)
+            return f"舵机 ID {', '.join(ids)} 通信异常"
         if "bno085" in lower:
             if "address must" in lower:
                 return "BNO085 地址配置错误"
@@ -373,7 +390,9 @@ class RobotdDiagnostics:
             return "IMU 未就绪或连接异常"
         if "onnx" in lower or "policy unavailable" in lower or "未配置 standup" in lower:
             missing = any(word in lower for word in ("no such file", "not found", "does not exist", "未配置"))
-            return "ONNX 文件缺失" if missing else "模型加载失败"
+            paths = re.findall(r"[^\s\"'<>:=]+\.onnx\b", message, re.IGNORECASE)
+            label = "ONNX 文件缺失" if missing else "模型加载失败"
+            return label + ("：" + ", ".join(dict.fromkeys(paths)) if paths else "")
         if any(word in lower for word in ("toml", "config", "配置")):
             return "配置文件错误"
         if "motor bus" in lower or "bus read fail" in lower or "servo sync_read" in lower:
@@ -461,7 +480,7 @@ class RobotdDiagnostics:
                 fault = False
             elif brief == "robotd 未连接，按 ENTER，启动 DUCK" and self.last_error:
                 pass
-            elif brief == "电机通信异常" and re.match(r"\d+ 电机", self.last_error):
+            elif brief == "电机通信异常" and self.last_error.startswith("舵机 ID "):
                 pass
             elif brief or not self.last_error:
                 self.last_error = brief or "robotd 出错，按 C 查看详情"
@@ -523,9 +542,9 @@ class RobotdDiagnostics:
             self.history.append((message, fault, runtime))
             if self.runtime_verbose or (self.verbose and not runtime):
                 print(f"\r\033[K[robotd {'故障' if fault else '状态'}] {message}", flush=True)
-            elif fault and self.last_error != self._shown_error:
-                self._shown_error = self.last_error
-                print(f"\r\033[K{self.last_error}", end="", flush=True)
+            elif fault and message != self._shown_error:
+                self._shown_error = message
+                print(f"\r\033[K[robotd 故障] {message}", flush=True)
 
     def set_verbose(self, enabled):
         self.display()
@@ -599,9 +618,6 @@ def main():
         sound_only=args.voice_sound_only,
     )
 
-    turns = {
-        "q": 0.30, "e": -0.30,
-    }
     skills = {"g": "ground_pick", "z": "kick_left", "v": "kick_right", "x": "roulade"}
     head_keys = {
         "w": ("head_pitch", -0.10), "s": ("head_pitch", 0.10),
@@ -708,7 +724,8 @@ def main():
             print("Enter：重启 robotd，等待 IMU 就绪，调用 StandUp 从地上起身；每次按下都重启。")
             print("W/S 每次增减 vx 0.10 m/s（范围 -0.40～+0.40），松开保持；长按会连续调速。")
             print("A/D 每次增减 vy 0.10 m/s（范围 -0.40～+0.40），松开保持；长按会连续调速。")
-            print("Q/E 左右转（松开约 0.3 秒停止转向）  空格速度归零  Esc/Ctrl-C 退出")
+            print("Q/E 每次增减 VTHETA 0.10 rad/s（范围 -0.30～+0.30），松开保持转向；长按连续调速。")
+            print("空格将 VX/VY/VTHETA 全部归零  Esc/Ctrl-C 退出")
             print("T 坐下/站起切换（Enter 启用后使用，切换前速度归零；两次点按请间隔 1 秒以上）。")
             print("C 打开/关闭详细日志：速度、IMU、倾倒计时、策略、电流及原始错误；连接后同时记录电流 CSV。")
             print("L 行走模式下打开/关闭运行日志：ONNX 文件、策略切换、起身/保护和 robotd 原始日志；不开始电流记录。")
@@ -720,7 +737,7 @@ def main():
             print("终端以按键重复估算长按和松开；R/F/X 松开约 0.3 秒释放，开关类按键两次点按请间隔 1 秒以上。")
             print("H 开启/关闭行走随机讲话；只在速度指令非零时发声，R/F 手动发声期间暂停。")
             print("退出会卸力，请先托住机器人；默认连接还会停止 robotd 服务。")
-            print("主界面只显示当前动作和简短故障；C/L 分别开关，未连接时也可查看；头部/身体模式的 L 仍调整侧倾。")
+            print("主界面实时显示三轴指令速度和状态；故障自动打印完整详情。C/L 分别开关；头部/身体模式的 L 仍调整侧倾。")
             terminal = sys.stdin.fileno()
             saved = termios.tcgetattr(terminal)
             enabled = False
@@ -736,7 +753,6 @@ def main():
             mouth_active = False
             shutdown_requested = False
             velocity = (0.0, 0.0, 0.0)
-            expires = 0.0
             current_socket = None
             current_log = None
             current_status = ""
@@ -784,7 +800,6 @@ def main():
                                 recovery_started = None
                                 walking_voice.set_moving(False)
                                 velocity = (0.0, 0.0, 0.0)
-                                expires = 0.0
                                 roll_until = rt_until = lt_until = 0.0
                                 roll_accepted = mouth_active = wheee_active = False
                                 mode = "drive"
@@ -889,7 +904,6 @@ def main():
                                 continue
                             elif key == " ":
                                 velocity = (0.0, 0.0, 0.0)
-                                expires = 0.0
                                 roll_until = rt_until = lt_until = 0.0
                                 head = dict.fromkeys(head, 0.0)
                                 pose = dict.fromkeys(pose, 0.0)
@@ -902,13 +916,11 @@ def main():
                                     send("robot.pose", {"active": False})
                                 mode = "drive" if mode == target else target
                                 velocity = (0.0, 0.0, 0.0)
-                                expires = 0.0
                                 pose = dict.fromkeys(pose, 0.0)
                                 call("robot.stop", {})
                             elif key in skills and enabled:
                                 if pressed:
                                     velocity = (0.0, 0.0, 0.0)
-                                    expires = 0.0
                                     roll_until = 0.0
                                     call("robot.stop", {})
                                     result = call("robot.do", {"skill": skills[key]}, allow_refusal=True)
@@ -933,7 +945,6 @@ def main():
                                 if key not in hold_sent and now - held_since[key] >= (3.0 if key == "m" else 2.0):
                                     hold_sent.add(key)
                                     velocity = (0.0, 0.0, 0.0)
-                                    expires = 0.0
                                     roll_until = rt_until = lt_until = 0.0
                                     call("robot.stop", {})
                                     if key == "m":
@@ -957,7 +968,6 @@ def main():
                             elif key == "t" and enabled:
                                 if pressed:
                                     velocity = (0.0, 0.0, 0.0)
-                                    expires = 0.0
                                     roll_until = 0.0
                                     call("robot.stop", {})
                                     try:
@@ -1028,19 +1038,9 @@ def main():
                             elif mode == "body" and key in pose_keys and enabled:
                                 field, step, low, high = pose_keys[key]
                                 pose[field] = max(low, min(high, round(pose[field] + step, 4)))
-                            elif mode == "drive" and key in ("w", "s") and enabled:
+                            elif mode == "drive" and key in "wsadqe" and enabled:
                                 roll_until = 0.0
-                                vx = round(velocity[0] + (0.10 if key == "w" else -0.10), 2)
-                                velocity = (max(-0.40, min(0.40, vx)), velocity[1], velocity[2])
-                            elif mode == "drive" and key in ("a", "d") and enabled:
-                                roll_until = 0.0
-                                vy = round(velocity[1] + (0.10 if key == "a" else -0.10), 2)
-                                velocity = (velocity[0], max(-0.40, min(0.40, vy)), velocity[2])
-                            elif mode == "drive" and key in turns and enabled:
-                                roll_until = 0.0
-                                velocity = (velocity[0], velocity[1], turns[key])
-                                # shortcut: terminal repeats replace key-up events; use evdev for exact release timing.
-                                expires = time.monotonic() + 0.30
+                                velocity = adjust_velocity(velocity, key)
                     if current_socket is not None and current_socket in readable:
                         try:
                             chunk = current_socket.recv(65536)
@@ -1099,8 +1099,6 @@ def main():
                                 *values, missing_ticks, state["policy"], limits, *movement["requested"], *phases,
                                 sample.get("input_abs_a", "") if valid else "",
                             ])
-                    if time.monotonic() >= expires:
-                        velocity = (velocity[0], velocity[1], 0.0)
                     live_state, _ = diagnostics._state
                     live_state = live_state or {}
                     live_safety = live_state.get("safety", {})
@@ -1128,7 +1126,7 @@ def main():
                         roll_until = rt_until = lt_until = 0.0
                     if recovering or diagnostics.recovery_failed:
                         velocity = (0.0, 0.0, 0.0)
-                        expires = roll_until = 0.0
+                        roll_until = 0.0
                         mode = "drive"
                     if enabled:
                         send("robot.move", dict(zip(("vx", "vy", "vyaw"), velocity)))
@@ -1149,10 +1147,10 @@ def main():
                         send("robot.sound", {"tag": "wheee", "hold": False})
                     wheee_active = now < lt_until
                     walking_voice.set_moving(is_walking(enabled, velocity) and not manual_mouth)
-                    vx, vy, vyaw = velocity
                     status = diagnostics.brief_status(enabled)
                     if mode != "drive" and status in ("站立中", "行走中"):
                         status = {"head": "头部控制中", "body": "身体姿态控制中"}[mode]
+                    status = f"{velocity_status(velocity)} | {status}"
                     now = time.monotonic()
                     if current_socket is not None and now - current_received > 0.5:
                         current_status = "电流数据已过期，等待新数据……"
@@ -1162,7 +1160,7 @@ def main():
                     if now >= next_display:
                         voice_status = walking_voice.status
                         if diagnostics.verbose:
-                            detail = f"v=({vx:+.2f},{vy:+.2f},{vyaw:+.2f}) | {diagnostics.state_status()} | {voice_status}"
+                            detail = f"{diagnostics.state_status()} | {voice_status}"
                             if mode != "drive":
                                 detail += " | " + " ".join(f"{key}={value:+.3f}" for key, value in
                                                           (head if mode == "head" else pose).items())

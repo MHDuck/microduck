@@ -77,9 +77,12 @@ sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py --walk-voice
   起身最多 12 秒，不经过 HOME/SitStand；期间暂缓倾倒锁定/预测降力，过流仍按配置执行。
   IMU 有效样本累计直立且转动缓慢 500 ms 后恢复控制；重复样本暂停计时，不要求关节角接近 HOME。
   超时日志显示重力、角速度和稳定计时，随后卸力。新二进制和脚本须一起部署。
-  W/S 调整前后速度；A/D 横移；Q/E 转向；空格速度归零。T 保留坐站切换，删除位置刷屏。
+  W/S 调整前后速度；A/D 横移；Q/E 每次增减转向速度 0.10 rad/s，范围 ±0.30 rad/s。
+  三轴均松开保持、长按连续调速；空格速度归零。T 保留坐站切换，删除位置刷屏。
   策略衔接沿用 master：walk 平滑指令幅值 ≤0.05 持续 3 秒后切 StandUp；rising 运行 3 秒后零速直接切 StandUp。
   踢腿、翻滚、拾取结束后交回自动策略选择；坐姿继续运行 sitstand。Enter 显式 StandUp 请求仍独立保留。
+  左右踢腿与前翻滚执行期间同样暂停倾倒判定并清空倾倒计时，避免动作中的倾斜触发锁定卸力；
+  动作结束后恢复正常判定。预测降力也不打断这些动作；过流仍由原配置控制，不因动作豁免。
 - 自动倒地恢复：`fall_protection=true` 时，行走模式正常站立/行走或 SitStand 的 rising 过程中确认倒地后强制运行 StandUp，最多 5 秒；成功恢复站立，失败锁定全身卸力。rising 会立即中断，不等满 3 秒。
   `fall_debounce_ms=200` 只控制倒地确认消抖；5 秒是独立的实际经过时间，IMU 重复或通信失败不会延长。起身完成判定沿用 Enter，过流优先。
   daemon 在起身期间屏蔽运动/技能指令，键盘清除原速度；成功后重新按方向键行走。失败不自动重试，按 Enter 重启恢复仍为 12 秒。
@@ -87,7 +90,11 @@ sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py --walk-voice
   自动/手动起身超时均锁定保护，并上报 `recovery_failed`；主界面持续提示“起身失败，摆好姿势后按 Enter 重试”。
   keycontrol 另有独立 5 秒超时卸力请求；失败后停止运动输入，C/L 仍可查看日志，Enter 重新启动恢复。
   L 显示自动起身开始、每秒剩余时间及结束结果。升级需同时同步 robotd、键盘脚本和部署配置。
-- 主界面只显示一条动作或简短故障，不拼接键盘、语音开关或数值；故障优先，不依赖 C。
+- 主界面每 0.2 秒显示 VX/VY/VTHETA 指令速度及动作或故障；故障优先，不依赖 C。
+  原始故障自动另行完整打印，保留 ONNX 路径、舵机 ID 和底层原因。
+  HD1910 批量读取失败时，每个失败周期额外只读诊断一颗舵机，轮询定位通信异常 ID 和关节名；
+  正常读取不增加查询，未定位时明确提示仍在诊断。robot.health 同样携带底层错误，支持自定义 socket。
+  逐颗诊断可能增加一次串口事务的延迟；需同时部署 robotd 二进制和键盘脚本。
   通信断开后保留键盘界面，可按 Enter 重试；起身成功后清除状态栏的最近故障。
   倾倒过程中分别显示“倾倒中”“倒地中”“倾倒保护了”，锁定触发才表示已请求卸力。
   独立只读连接持续订阅实际状态；默认和自定义 socket 都会自动重连，断流和数据过期显示简短提示。
@@ -209,6 +216,7 @@ sudo systemctl start robotd
 python3 -m unittest \
   scripts/test_duck_voice.py \
   scripts/test_walking_voice.py \
+  scripts/test_keyboard_control.py \
   scripts/test_camera_detect.py \
   scripts/test_standup_test.py
 

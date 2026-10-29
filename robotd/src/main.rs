@@ -396,6 +396,7 @@ struct RobotState {
     /// Why the policy is not loaded, if it is not. Set once at startup; the loop keeps
     /// running and holds the pose, so a broken bundle is a rollback rather than a crash.
     policy_error: ArcSwapOption<String>,
+    bus_error: ArcSwapOption<String>,
     /// Which policy files this process is running, as file names. `None` when the policy is
     /// disabled.
     ///
@@ -473,6 +474,7 @@ impl RobotState {
             state_tx: tokio::sync::broadcast::Sender::new(STATE_BUFFER),
             chorale_tx: tokio::sync::broadcast::Sender::new(8),
             policy_error: ArcSwapOption::empty(),
+            bus_error: ArcSwapOption::empty(),
             policies: ArcSwap::from_pointee(PolicyNames::of(&params.resolved_policy())),
             has_voice: params.audio.enabled && has_any_wav(&params.audio.bank),
             theremin_ready: AtomicBool::new(false),
@@ -558,7 +560,14 @@ impl RobotState {
 
         let errors = self.consecutive_errors.load(Ordering::Relaxed);
         if errors >= self.max_consecutive_errors {
-            return unhealthy(format!("{errors} consecutive bus read failures"));
+            let detail = self.bus_error.load_full();
+            return unhealthy(format!(
+                "{errors} consecutive bus read failures: {}",
+                detail
+                    .as_deref()
+                    .map(String::as_str)
+                    .unwrap_or("cause unavailable")
+            ));
         }
 
         // A wedged loop stops stamping. This is what turns a hung control thread into an
@@ -1541,7 +1550,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
     let mut window_ticks = 0u64;
     let mut last_summary = Instant::now();
     let mut was_driving = false;
-    let mut was_rolling = false;
+    let mut was_kicking_or_rolling = false;
     let mut was_enabled = false;
     let mut bringup = Bringup::Limp;
     // `robot.mouth` is also valid while the body is limp. No bus write happens until a client
@@ -1705,9 +1714,11 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
         let mut fresh = match safety.read() {
             Ok(sensors) => {
                 state.consecutive_errors.store(0, Ordering::Relaxed);
+                state.bus_error.store(None);
                 Some(sensors)
             }
             Err(e) => {
+                state.bus_error.store(Some(Arc::new(e.to_string())));
                 let n = state.consecutive_errors.fetch_add(1, Ordering::Relaxed) + 1;
                 // One dropped transaction is ordinary on a serial bus; a run of them is not.
                 // Log the first and then every tenth, so a persistent fault is visible
@@ -1853,7 +1864,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
             }
         }
 
-        let rolling = was_rolling
+        let kicking_or_rolling = was_kicking_or_rolling
             && intents.enabled()
             && bringup == Bringup::Ready
             && stand_up_until.is_none()
@@ -1861,8 +1872,8 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
             && shutdown_sit.is_none()
             && mode_change.is_none()
             && !powered_off;
-        if rolling {
-            // A deliberate roll must not count toward the next fall debounce.
+        if kicking_or_rolling {
+            // Deliberate kicks and rolls must not count toward the next fall debounce.
             safety.reset_fall_detection();
         }
         let auto_recovery_allowed = params.safety.fall_protection
@@ -1884,7 +1895,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                 .as_ref()
                 .is_some_and(Controller::allows_fall_recovery);
         if let Some(fresh) = fresh.as_ref() {
-            if imu_read_errors == 0 && !rolling {
+            if imu_read_errors == 0 && !kicking_or_rolling {
                 safety.observe_with_recovery(fresh, period, auto_recovery_allowed);
             }
             // Only once the orientation filter has converged: seeding the anchor from a
@@ -2610,7 +2621,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
             ),
             _ => (hold, policy_cfg.gain, false, "held"),
         };
-        was_rolling = policy_label == "roulade";
+        was_kicking_or_rolling = matches!(policy_label, "roulade" | "kick_left" | "kick_right");
         if policy_label == "walk"
             && command.twist_magnitude() > DEFAULT_STANDING_THRESHOLD
             && !safety.fallen()
@@ -4115,9 +4126,13 @@ mod tests {
         );
 
         s.consecutive_errors.store(10, Ordering::Relaxed);
+        s.bus_error
+            .store(Some(Arc::new("servo 22 (knee): timed out".into())));
         let health = s.health();
         assert!(!health.healthy);
-        assert!(health.reason.unwrap().contains("consecutive"));
+        let reason = health.reason.unwrap();
+        assert!(reason.contains("consecutive"));
+        assert!(reason.contains("servo 22 (knee): timed out"));
     }
 
     /// `--unhealthy` must win over a healthy loop: it exists to exercise rollback.

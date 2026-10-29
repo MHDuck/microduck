@@ -386,6 +386,36 @@ pub const HLS_EEPROM_EXPECTED: &[RegisterExpectation] = &[
 
 // ── the bus ──────────────────────────────────────────────────────────────────
 
+#[derive(Default)]
+struct ReadDiagnostics {
+    next: usize,
+    failures: [Option<String>; NUM_JOINTS],
+}
+
+impl ReadDiagnostics {
+    fn diagnose(&mut self, mut probe: impl FnMut(u8) -> Result<()>) -> String {
+        // One read-only probe per failed tick bounds the extra delay to one transaction.
+        let joint = self.next;
+        self.next = (joint + 1) % NUM_JOINTS;
+        self.failures[joint] = probe(JOINT_IDS[joint]).err().map(|e| e.to_string());
+        let faults: Vec<_> = self
+            .failures
+            .iter()
+            .enumerate()
+            .filter_map(|(i, error)| {
+                error
+                    .as_ref()
+                    .map(|e| format!("servo {} ({}): {e}", JOINT_IDS[i], JOINT_NAMES[i]))
+            })
+            .collect();
+        if faults.is_empty() {
+            "individual diagnostics in progress; no failed servo identified yet".to_owned()
+        } else {
+            format!("individual read failures: {}", faults.join("; "))
+        }
+    }
+}
+
 pub struct FeetechIo {
     controller: Sts3215Controller,
     /// Servo ids in [`crate::model::JOINT_IDS`] order — the order blocks come back in.
@@ -394,6 +424,7 @@ pub struct FeetechIo {
     last_volts: [f64; NUM_JOINTS],
     /// Case temperature per joint from the last tick's block.
     last_temps_c: [f64; NUM_JOINTS],
+    read_diagnostics: ReadDiagnostics,
 }
 
 impl FeetechIo {
@@ -419,6 +450,7 @@ impl FeetechIo {
             ids: JOINT_IDS.to_vec(),
             last_volts: [0.0; NUM_JOINTS],
             last_temps_c: [0.0; NUM_JOINTS],
+            read_diagnostics: ReadDiagnostics::default(),
         };
         io.ping_all()?;
         io.apply_startup()?;
@@ -573,10 +605,35 @@ impl FeetechIo {
 
 impl RobotIo for FeetechIo {
     fn read(&mut self) -> Result<Sensors> {
-        let blocks = self
-            .controller
-            .sync_read_raw_data(&self.ids, TICK_READ_ADDR, TICK_READ_LEN)
-            .map_err(|e| IoError::Bus(format!("hls servo sync_read: {e}")))?;
+        let blocks =
+            match self
+                .controller
+                .sync_read_raw_data(&self.ids, TICK_READ_ADDR, TICK_READ_LEN)
+            {
+                Ok(blocks) => {
+                    self.read_diagnostics = ReadDiagnostics::default();
+                    blocks
+                }
+                Err(error) => {
+                    let detail = self.read_diagnostics.diagnose(|id| {
+                        let block = self
+                            .controller
+                            .read_raw_data(id, TICK_READ_ADDR, TICK_READ_LEN)
+                            .map_err(|e| IoError::Bus(e.to_string()))?;
+                        if block.len() != TICK_READ_LEN as usize {
+                            return Err(IoError::ShortRead {
+                                what: "individual feedback block",
+                                expected: TICK_READ_LEN as usize,
+                                got: block.len(),
+                            });
+                        }
+                        Ok(())
+                    });
+                    return Err(IoError::Bus(format!(
+                        "hls servo sync_read: {error}; {detail}"
+                    )));
+                }
+            };
 
         if blocks.len() != NUM_JOINTS {
             return Err(IoError::ShortRead {
@@ -708,6 +765,37 @@ impl RobotIo for FeetechIo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_reads_probe_one_joint_at_a_time_and_name_each_failure() {
+        let mut diagnostics = ReadDiagnostics::default();
+        for round in 0..2 {
+            for (joint, &id) in JOINT_IDS.iter().enumerate() {
+                let mut calls = 0;
+                let detail = diagnostics.diagnose(|probed| {
+                    calls += 1;
+                    assert_eq!(probed, id);
+                    if round == 0 && (joint == 2 || joint == 7) {
+                        Err(IoError::Bus("timed out".into()))
+                    } else {
+                        Ok(())
+                    }
+                });
+                assert_eq!(calls, 1);
+                if round == 0 && joint >= 2 {
+                    assert!(detail.contains("servo 22"));
+                    assert!(detail.contains(JOINT_NAMES[2]));
+                    assert!(detail.contains("timed out"));
+                }
+                if round == 0 && joint >= 7 {
+                    assert!(detail.contains("servo 32"));
+                }
+                if round == 1 && joint >= 7 {
+                    assert!(detail.contains("no failed servo identified yet"));
+                }
+            }
+        }
+    }
 
     // ── FT-HLS frame bits, checked against the protocol manual examples ─────
     //
