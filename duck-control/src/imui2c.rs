@@ -385,6 +385,11 @@ pub struct ImuBus {
 impl ImuBus {
     /// Open and initialise the IMU at `address` (0x6A or 0x6B) on the `bus_path` device.
     pub fn open(bus_path: &Path, address: u8) -> Result<Self> {
+        Self::open_with_mount(bus_path, address, SflpDecoder::DEFAULT_MOUNT)
+    }
+
+    /// Open with an explicit sensor→body mounting quaternion (scalar-first).
+    pub fn open_with_mount(bus_path: &Path, address: u8, mount: [f64; 4]) -> Result<Self> {
         let dev = bus::I2cDev::open(bus_path).map_err(|source| IoError::Port {
             path: bus_path.display().to_string(),
             source,
@@ -400,7 +405,7 @@ impl ImuBus {
 
         Ok(Self {
             sensor,
-            decoder: SflpDecoder::default(),
+            decoder: SflpDecoder::new(mount),
             stale: bus::StaleImuTracker::default(),
             last_gyro: None,
             last_quat: None,

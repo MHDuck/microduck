@@ -97,6 +97,11 @@ pub const REGISTRY: &[Entry] = &[
         "I²C bus device for the IMU (/dev/i2c-3)",
     ),
     entry("imu.address", Kind::Integer, "IMU I²C address (0x4B)"),
+    entry(
+        "imu.mounting",
+        Kind::Choice(crate::IMU_MOUNTING_LABELS),
+        "Sensor +X/+Y/+Z directions relative to the body; driver_default preserves the old mounting",
+    ),
     // ── [control] ────────────────────────────────────────────────────────────
     entry("control.hz", Kind::Integer, "Control loop rate"),
     entry(

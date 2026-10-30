@@ -244,6 +244,39 @@ const _: () = assert!(NUM_JOINTS > 0);
 mod tests {
     use super::*;
 
+    #[test]
+    fn custom_mount_rotates_all_outputs_consistently() {
+        let mut block = [0u8; IMU_BLOCK_LEN];
+        for (i, value) in [100i16, 200, 300].into_iter().enumerate() {
+            block[i * 2..i * 2 + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        block[8..10].copy_from_slice(&0x39A8u16.to_le_bytes()); // y ≈ sin(45°)
+        let mut mounted = SflpDecoder::default();
+        let mut aligned = SflpDecoder::new([1.0, 0.0, 0.0, 0.0]);
+        // Let the median filter settle.
+        for _ in 0..2 {
+            mounted.decode(&block);
+            aligned.decode(&block);
+        }
+        let a = mounted.decode(&block);
+        let b = aligned.decode(&block);
+        let expected = rotate(SflpDecoder::DEFAULT_MOUNT, b.gravity);
+        for i in 0..3 {
+            assert!((a.gravity[i] - expected[i]).abs() < 1e-12);
+        }
+        for (actual, expected) in a
+            .gyro
+            .into_iter()
+            .zip([300.0, 200.0, -100.0])
+            .chain(b.gyro.into_iter().zip([100.0, 200.0, 300.0]))
+        {
+            assert!((actual - expected * GYRO_RAD_PER_LSB).abs() < 1e-12);
+        }
+        assert!((a.gravity[2] + 1.0).abs() < 1e-6);
+        assert!(b.gravity[0] > 0.99);
+        assert_ne!(a.quat, b.quat);
+    }
+
     /// Half-precision decoding is hand-rolled, so pin the cases that matter: zero, one,
     /// a negative, and a subnormal. A wrong exponent bias here silently tilts the horizon.
     #[test]

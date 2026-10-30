@@ -1109,7 +1109,8 @@ fn open_imu(cfg: &params::Imu) -> ImuIoBox {
                 }
             };
         }
-        if let Some(imu) = try_open_imu(&cfg.bus, cfg.address) {
+        let mount = cfg.mounting.sensor_to_body(cfg.driver);
+        if let Some(imu) = try_open_imu(&cfg.bus, cfg.address, mount) {
             return imu;
         }
         match duck_control::imui2c::pick_lsm6dsv16x() {
@@ -1123,7 +1124,7 @@ fn open_imu(cfg: &params::Imu) -> ImuIoBox {
                     configured = %cfg.bus.display(),
                     "IMU is not on [imu].bus; using the chip imu_probe would pick"
                 );
-                if let Some(imu) = try_open_imu(&hit.bus, hit.address) {
+                if let Some(imu) = try_open_imu(&hit.bus, hit.address, mount) {
                     return imu;
                 }
             }
@@ -1146,7 +1147,7 @@ fn open_imu(cfg: &params::Imu) -> ImuIoBox {
 }
 
 #[cfg(target_os = "linux")]
-fn try_open_imu(bus: &std::path::Path, address: u8) -> Option<ImuIoBox> {
+fn try_open_imu(bus: &std::path::Path, address: u8, mount: [f64; 4]) -> Option<ImuIoBox> {
     // WHO_AM_I only — `ImuBus::open` would reset whatever lives at this address.
     match duck_control::imui2c::ImuBus::who_am_i(bus, address) {
         Ok(id) if id == duck_control::imui2c::LSM6DSV16X_ID => {}
@@ -1169,7 +1170,7 @@ fn try_open_imu(bus: &std::path::Path, address: u8) -> Option<ImuIoBox> {
             return None;
         }
     }
-    match duck_control::imui2c::ImuBus::open(bus, address) {
+    match duck_control::imui2c::ImuBus::open_with_mount(bus, address, mount) {
         Ok(imu) => {
             tracing::info!(bus = %bus.display(), address, "IMU opened");
             Some(ImuIoBox(Box::new(imu)))

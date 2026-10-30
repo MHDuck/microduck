@@ -16,7 +16,9 @@
 //! test that walks [`Params`]'s own serialization, so a new section cannot be added without
 //! the registry (and therefore the editor) learning about it.
 
+mod imu_mount;
 pub mod registry;
+pub use imu_mount::{IMU_MOUNTING_LABELS, ImuMounting};
 
 use std::path::{Path, PathBuf};
 
@@ -938,6 +940,8 @@ impl Driver {
 #[serde(deny_unknown_fields, default)]
 pub struct Imu {
     pub driver: ImuDriver,
+    /// Physical sensor-axis directions; omitted keeps the selected driver's old mounting.
+    pub mounting: ImuMounting,
     /// The i2c-dev device for the selected IMU. The board aliases I²C3 as `/dev/i2c-imu`.
     pub bus: PathBuf,
     /// The selected chip's 7-bit address: BNO085 0x4A/0x4B, LSM6DSV16X 0x6A/0x6B.
@@ -1014,6 +1018,7 @@ impl Default for Imu {
     fn default() -> Self {
         Self {
             driver: ImuDriver::default(),
+            mounting: ImuMounting::default(),
             bus: PathBuf::from("/dev/i2c-3"),
             address: 0x4B,
         }

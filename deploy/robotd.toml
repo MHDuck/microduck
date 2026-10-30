@@ -38,9 +38,40 @@ driver = "hd1910"
 # MicroDuck (variant = "microduck") ignores this section: the IMU is imu_to_dxl at
 # Dynamixel ID 200, fetched in the same sync_read as the XL330s.
 driver = "bno085"
-# Confirmed mounting: sensor +X up, +Y left, +Z backward.
 bus = "/dev/i2c-3"
 address = 0x4B
+# IMU 安装方向：按传感器丝印的正轴 +X、+Y、+Z，相对机器人身体的朝向选择。
+# 机器人坐标固定为 +X 向前、+Y 向左、+Z 向上；左右以机器人自身为准。
+# 以下列出全部 24 种正交安装方向；每行依次说明传感器 +X / +Y / +Z：
+#   "x_forward_y_left_z_up"         X 向前，Y 向左，Z 向上
+#   "x_forward_y_right_z_down"      X 向前，Y 向右，Z 向下
+#   "x_forward_y_up_z_right"        X 向前，Y 向上，Z 向右
+#   "x_forward_y_down_z_left"       X 向前，Y 向下，Z 向左
+#   "x_back_y_left_z_down"          X 向后，Y 向左，Z 向下
+#   "x_back_y_right_z_up"           X 向后，Y 向右，Z 向上
+#   "x_back_y_up_z_left"            X 向后，Y 向上，Z 向左
+#   "x_back_y_down_z_right"         X 向后，Y 向下，Z 向右
+#   "x_left_y_forward_z_down"       X 向左，Y 向前，Z 向下
+#   "x_left_y_back_z_up"            X 向左，Y 向后，Z 向上
+#   "x_left_y_up_z_forward"         X 向左，Y 向上，Z 向前
+#   "x_left_y_down_z_back"          X 向左，Y 向下，Z 向后
+#   "x_right_y_forward_z_up"        X 向右，Y 向前，Z 向上
+#   "x_right_y_back_z_down"         X 向右，Y 向后，Z 向下
+#   "x_right_y_up_z_back"           X 向右，Y 向上，Z 向后
+#   "x_right_y_down_z_forward"      X 向右，Y 向下，Z 向前
+#   "x_up_y_forward_z_left"         X 向上，Y 向前，Z 向左
+#   "x_up_y_back_z_right"           X 向上，Y 向后，Z 向右
+#   "x_up_y_left_z_back"            X 向上，Y 向左，Z 向后
+#   "x_up_y_right_z_forward"        X 向上，Y 向右，Z 向前
+#   "x_down_y_forward_z_right"      X 向下，Y 向前，Z 向右
+#   "x_down_y_back_z_left"          X 向下，Y 向后，Z 向左
+#   "x_down_y_left_z_forward"       X 向下，Y 向左，Z 向前
+#   "x_down_y_right_z_back"         X 向下，Y 向右，Z 向后
+#   "driver_default"：沿用对应驱动的旧默认（省略 mounting 也是此行为）：
+#     bno085：X 向上、Y 向左、Z 向后；lsm6dsv16x：X 向下、Y 向左、Z 向前。
+# 同时作用于角速度、姿态四元数和重力；修改后需要重启 robotd。
+# 仅适用于 OpenMicroDuck 的 I²C IMU；microduck 的总线 IMU 不使用此项。
+mounting = "x_up_y_left_z_back"
 
 # Every value below that is commented out shows the built-in default. LEAVE IT COMMENTED
 # unless this robot genuinely needs a different value: install.sh copies this file to

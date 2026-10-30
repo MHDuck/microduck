@@ -21,6 +21,14 @@
 控制器/策略切换、舵机模型、`keyboard-control.py` 旧版、`xh_push.sh` 旧版等实验改动。新工程
 以墨恒最新实现为准，只在最新版 `xh_push.sh` 中增加上述脚本的上传。
 
+### IMU 安装方向（本地新增配置）
+
+`deploy/robotd.toml` 的 `[imu].mounting` 支持 24 种正交安装方向，配置旁的中文注释逐项
+说明传感器 +X/+Y/+Z 相对机身的朝向。当前值 `x_up_y_left_z_back` 保持 BNO085 原来的
+X 向上、Y 向左、Z 向后。省略或设为 `driver_default` 时保留各驱动旧默认。
+该项同时变换角速度、姿态和重力，适用于 OpenMicroDuck 的 BNO085 和 LSM6DSV16X，
+不改变 MicroDuck 的总线 IMU。需同步新版 robotd 二进制与配置，重启后生效。
+
 ## 2. 单独测试语音与嘴部
 
 板端运行，完全不需要启用行走：
