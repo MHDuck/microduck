@@ -1,5 +1,20 @@
 # HD1910 本地部署增量（2026-10-20）
 
+## 2026-10-30 master 与 dzh_voice 同步合并
+
+按用户授权合入远端 master `bbfb493` 的 IMU 安装方向配置和模型更新，保留 dzh_voice 的三个语音提交，
+以及 `MHDuck_平台接口协议_v1.1_设计稿.md`、`MHDuck_部署工程平台化改造方案.md` 两份设计文档。
+本次不带入本地 Kick Phased/progress 专项：五个 Rust 文件、示例配置及两份旧记录中的未提交踢球增量均已剔除。
+Rust、部署配置和模型保留远端 master 的原样内容；语音仍默认 off，不改变 master 动作衔接和保护。
+后续继续在 dzh_voice 开发；本次经明确授权同步 master，不代表以后可未经授权直接修改/推送 master。原 dzh 分支不动。
+合并前现场保存在本地 `backup/pre-master-merge-20261030-working-tree`（同时保留 stash）；
+其第三父提交保存当时未跟踪的两份文档。原分支端点另存 `backup/pre-master-merge-20261030-dzh-voice` 与 `backup/pre-master-merge-20261030-master`。
+这些备份只保留本地，不随业务分支推送；不应把备份中的 kick 代码重新合回。
+验证：Ubuntu 下脚本19项通过、语音34项通过/2项依赖或模型缺失跳过；Rust check通过，duck-control 89项通过、
+robotd 96过/5失败、params 28过/1失败、updater_gate集成7项通过。已在独立临时目录导出原始 master `bbfb493`
+复测，得到同名同原因的6项失败，未为本次语音合并修改这些基线问题。rustfmt组件未安装，格式工具检查未完成。
+Python AST、语音同步脚本语法、平台文档JSON/链接及Git空白检查通过；未连接/部署到板端或做实机测试。
+
 ## 2026-10-29 当前基线：dzh_voice
 
 当前从远端master `7caaae8`新建dzh_voice，原dzh/master引用未改；旧未提交现场已stash和快照保存。
@@ -33,6 +48,14 @@
 不迁移旧仓库的：本地 ONNX、`deploy/robotd.toml.walk`、HOME、KP、过流阈值、fall recovery、
 控制器/策略切换、舵机模型、`keyboard-control.py` 旧版、`xh_push.sh` 旧版等实验改动。新工程
 以墨恒最新实现为准，只在最新版 `xh_push.sh` 中增加上述脚本的上传。
+
+### IMU 安装方向（本地新增配置）
+
+`deploy/robotd.toml` 的 `[imu].mounting` 支持 24 种正交安装方向，配置旁的中文注释逐项
+说明传感器 +X/+Y/+Z 相对机身的朝向。当前值 `x_up_y_left_z_back` 保持 BNO085 原来的
+X 向上、Y 向左、Z 向后。省略或设为 `driver_default` 时保留各驱动旧默认。
+该项同时变换角速度、姿态和重力，适用于 OpenMicroDuck 的 BNO085 和 LSM6DSV16X，
+不改变 MicroDuck 的总线 IMU。需同步新版 robotd 二进制与配置，重启后生效。
 
 ## 2. 单独测试语音与嘴部
 

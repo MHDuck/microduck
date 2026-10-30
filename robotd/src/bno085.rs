@@ -24,8 +24,9 @@ pub struct Bno085 {
 
 impl Bno085 {
     pub fn open(cfg: &robotd_params::Imu) -> io::Result<Self> {
-        // Body→sensor, wxyz: sensor +X up, +Y left, +Z backward.
-        let mount = [std::f64::consts::FRAC_1_SQRT_2, 0.0, std::f64::consts::FRAC_1_SQRT_2, 0.0];
+        // This reader consumes body→sensor; the configuration supplies sensor→body.
+        let [w, x, y, z] = cfg.mounting.sensor_to_body(cfg.driver);
+        let mount = [w, -x, -y, -z];
         if !matches!(cfg.address, 0x4a | 0x4b) {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "BNO085 address must be 0x4A or 0x4B"));
         }
@@ -191,12 +192,7 @@ impl Sensor {
                     }
                     if let (Some((qt, q)), Some((gt, g))) = (quat, gyro) {
                         if now.duration_since(qt.min(gt)) < MAX_AGE && sent_quat != Some(qt) && sent_gyro != Some(gt) {
-                            let body = multiply(q, mount);
-                            let data = ImuData {
-                                quat: body,
-                                gyro: inverse_rotate(mount, g),
-                                gravity: inverse_rotate(body, [0.0, 0.0, -1.0]),
-                            };
+                            let data = body_sample(q, g, mount);
                             sequence += 1;
                             *latest.lock().unwrap() = Some((qt.min(gt), data, sequence));
                             sent_quat = Some(qt);
@@ -219,6 +215,15 @@ impl Sensor {
     }
 }
 
+fn body_sample(q: [f64; 4], gyro: [f64; 3], body_to_sensor: [f64; 4]) -> ImuData {
+    let body = multiply(q, body_to_sensor);
+    ImuData {
+        quat: body,
+        gyro: inverse_rotate(body_to_sensor, gyro),
+        gravity: inverse_rotate(body, [0.0, 0.0, -1.0]),
+    }
+}
+
 fn normalize(q: [f64; 4]) -> Option<[f64; 4]> {
     let norm = q.iter().map(|v| v * v).sum::<f64>().sqrt();
     (norm.is_finite() && norm > 1e-9).then(|| q.map(|v| v / norm))
@@ -231,4 +236,48 @@ fn multiply([w, x, y, z]: [f64; 4], [a, b, c, d]: [f64; 4]) -> [f64; 4] {
 fn inverse_rotate([w, x, y, z]: [f64; 4], v: [f64; 3]) -> [f64; 3] {
     let q = multiply(multiply([w, -x, -y, -z], [0.0, v[0], v[1], v[2]]), [w, x, y, z]);
     [q[1], q[2], q[3]]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use robotd_params::{ImuDriver, ImuMounting};
+
+    #[test]
+    fn mounting_rotates_gyro_gravity_and_attitude_together() {
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        let sensor_q = [h, 0.0, -h, 0.0];
+        for (mounting, expected_gyro, expected_gravity, expected_quat) in [
+            (
+                ImuMounting::DriverDefault,
+                [-3.0, 2.0, 1.0],
+                [0.0, 0.0, -1.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ),
+            (
+                ImuMounting::XUpYLeftZBack,
+                [-3.0, 2.0, 1.0],
+                [0.0, 0.0, -1.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ),
+            (
+                ImuMounting::XForwardYLeftZUp,
+                [1.0, 2.0, 3.0],
+                [-1.0, 0.0, 0.0],
+                sensor_q,
+            ),
+        ] {
+            let [w, x, y, z] = mounting.sensor_to_body(ImuDriver::Bno085);
+            let data = body_sample(sensor_q, [1.0, 2.0, 3.0], [w, -x, -y, -z]);
+            for (actual, expected) in data
+                .gyro
+                .into_iter()
+                .zip(expected_gyro)
+                .chain(data.gravity.into_iter().zip(expected_gravity))
+                .chain(data.quat.into_iter().zip(expected_quat))
+            {
+                assert!((actual - expected).abs() < 1e-12, "{mounting:?}: {data:?}");
+            }
+        }
+    }
 }

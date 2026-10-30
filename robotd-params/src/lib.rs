@@ -16,7 +16,9 @@
 //! test that walks [`Params`]'s own serialization, so a new section cannot be added without
 //! the registry (and therefore the editor) learning about it.
 
+mod imu_mount;
 pub mod registry;
+pub use imu_mount::{IMU_MOUNTING_LABELS, ImuMounting};
 
 use std::path::{Path, PathBuf};
 
@@ -546,6 +548,9 @@ pub struct PolicyParams {
     pub ground_pick_action_scale: Option<f64>,
     /// Gain multiplier while the ground pick runs.
     pub ground_pick_gain_ratio: f64,
+    pub ground_pick_auto_mouth: bool,
+    pub ground_pick_mouth_open_s: f64,
+    pub ground_pick_mouth_close_s: f64,
     /// How long a kick window stays on the kick network, seconds.
     pub kick_duration: f64,
     /// One roulade — one forward roll, seconds. Holding the button chains rolls; this is
@@ -594,6 +599,9 @@ pub struct ResolvedPolicy {
     pub ground_pick_period: f64,
     pub ground_pick_action_scale: f64,
     pub ground_pick_gain_ratio: f64,
+    pub ground_pick_auto_mouth: bool,
+    pub ground_pick_mouth_open_s: f64,
+    pub ground_pick_mouth_close_s: f64,
     pub kick_duration: f64,
     pub roulade_duration: f64,
     pub roulade_action_scale: f64,
@@ -664,6 +672,9 @@ impl PolicyParams {
             }),
             ground_pick_action_scale: self.ground_pick_action_scale.unwrap_or(1.0),
             ground_pick_gain_ratio: self.ground_pick_gain_ratio,
+            ground_pick_auto_mouth: self.ground_pick_auto_mouth,
+            ground_pick_mouth_open_s: self.ground_pick_mouth_open_s,
+            ground_pick_mouth_close_s: self.ground_pick_mouth_close_s,
             kick_duration: self.kick_duration,
             roulade_duration: self.roulade_duration,
             roulade_action_scale: self.roulade_action_scale,
@@ -760,6 +771,9 @@ impl Default for PolicyParams {
             ground_pick_period: None,
             ground_pick_action_scale: None,
             ground_pick_gain_ratio: 1.0,
+            ground_pick_auto_mouth: false,
+            ground_pick_mouth_open_s: 0.5,
+            ground_pick_mouth_close_s: 1.5,
             kick_duration: 0.5,
             roulade_duration: 1.0,
             roulade_action_scale: 1.0,
@@ -926,6 +940,8 @@ impl Driver {
 #[serde(deny_unknown_fields, default)]
 pub struct Imu {
     pub driver: ImuDriver,
+    /// Physical sensor-axis directions; omitted keeps the selected driver's old mounting.
+    pub mounting: ImuMounting,
     /// The i2c-dev device for the selected IMU. The board aliases I²C3 as `/dev/i2c-imu`.
     pub bus: PathBuf,
     /// The selected chip's 7-bit address: BNO085 0x4A/0x4B, LSM6DSV16X 0x6A/0x6B.
@@ -1002,6 +1018,7 @@ impl Default for Imu {
     fn default() -> Self {
         Self {
             driver: ImuDriver::default(),
+            mounting: ImuMounting::default(),
             bus: PathBuf::from("/dev/i2c-3"),
             address: 0x4B,
         }
@@ -1051,6 +1068,8 @@ pub enum ParamsError {
     Rate { path: String, got: u32 },
     #[error("{path}: invalid safety configuration: {reason}")]
     Safety { path: String, reason: &'static str },
+    #[error("{path}: policy ground-pick mouth times must be finite, with 0 <= ground_pick_mouth_open_s < ground_pick_mouth_close_s")]
+    GroundPickMouth { path: String },
     #[error(
         "{path}: media.bitrate must be between {min} and {max} bits per second, got {got} — \
          the unit is bits, so 2 Mb/s is 2000000"
@@ -1131,6 +1150,15 @@ impl Params {
     /// Reject values that would produce a loop that cannot work, at startup rather than as
     /// a division by zero three seconds later.
     fn validate(&self, path: &Path) -> Result<(), ParamsError> {
+        if !self.policy.ground_pick_mouth_open_s.is_finite()
+            || !self.policy.ground_pick_mouth_close_s.is_finite()
+            || self.policy.ground_pick_mouth_open_s < 0.0
+            || self.policy.ground_pick_mouth_close_s <= self.policy.ground_pick_mouth_open_s
+        {
+            return Err(ParamsError::GroundPickMouth {
+                path: path.display().to_string(),
+            });
+        }
         let safety_error = if !self.safety.overcurrent_cutoff_a.is_finite()
             || self.safety.overcurrent_cutoff_a <= 0.0
         {

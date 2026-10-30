@@ -261,6 +261,11 @@ impl Controller {
         Ok(())
     }
 
+    pub fn ground_pick_elapsed(&self) -> Option<f64> {
+        self.ground_pick
+            .map(|phase| phase * self.skills.ground_pick_period)
+    }
+
     /// Start a kick window. Blocked while any scripted move runs, as the prototype blocks it.
     pub fn start_kick(&mut self, left: bool) -> Result<(), &'static str> {
         if !self.policy.has_kick(left) {

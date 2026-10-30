@@ -1,6 +1,6 @@
 # Local HD1910 deployment rules
 
-- Active development branch is `dzh_voice`, based on origin/master `7caaae8` (2026-10-29).
+- Active development branch is `dzh_voice`; upstream master `bbfb493` was merged on 2026-10-30.
   Do not switch/edit/merge into local `master` or `dzh` without explicit user authorization.
   Task transitions, motor configuration, safety and model choices follow master;
   voice is an opt-in INPUT adapter to its keyboard loop, never a second robot controller.

@@ -97,6 +97,11 @@ pub const REGISTRY: &[Entry] = &[
         "I²C bus device for the IMU (/dev/i2c-3)",
     ),
     entry("imu.address", Kind::Integer, "IMU I²C address (0x4B)"),
+    entry(
+        "imu.mounting",
+        Kind::Choice(crate::IMU_MOUNTING_LABELS),
+        "Sensor +X/+Y/+Z directions relative to the body; driver_default preserves the old mounting",
+    ),
     // ── [control] ────────────────────────────────────────────────────────────
     entry("control.hz", Kind::Integer, "Control loop rate"),
     entry(
@@ -204,6 +209,21 @@ pub const REGISTRY: &[Entry] = &[
         "policy.ground_pick_gain_ratio",
         Kind::Float,
         "Gain multiplier during the ground pick",
+    ),
+    entry(
+        "policy.ground_pick_auto_mouth",
+        Kind::Bool,
+        "Automatically open and close the beak during ground pick",
+    ),
+    entry(
+        "policy.ground_pick_mouth_open_s",
+        Kind::Float,
+        "Open the beak this many seconds into ground pick",
+    ),
+    entry(
+        "policy.ground_pick_mouth_close_s",
+        Kind::Float,
+        "Close the beak this many seconds into ground pick",
     ),
     entry("policy.kick_duration", Kind::Float, "Kick window, seconds"),
     entry(
