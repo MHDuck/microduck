@@ -3753,7 +3753,7 @@ fn dispatch(
                 {
                     proto::IntentResult::refused("no stand-up policy loaded")
                 } else {
-                    intents.request_stand_up(p.ignore_protection);
+                    intents.request_stand_up(true);
                     proto::IntentResult::accepted()
                 };
                 return proto::Response::ok(Some(id), &result);
@@ -4107,7 +4107,7 @@ mod tests {
     }
 
     #[test]
-    fn standup_dispatch_preserves_the_requested_protection_mode() {
+    fn standup_dispatch_always_ignores_protection_for_any_client() {
         let s = state();
         s.policies.store(Arc::new(PolicyNames {
             stand: Some("standup.onnx".into()),
@@ -4116,17 +4116,16 @@ mod tests {
         s.policy_error.store(None);
         s.protection_latched.store(true, Ordering::Relaxed);
         let intents = Arc::new(Intents::new());
-        for ignore_protection in [true, false] {
+        for json in [
+            r#"{"on":true,"stand_up":true}"#,
+            r#"{"on":true,"stand_up":true,"ignore_protection":false}"#,
+            r#"{"on":true,"stand_up":true,"ignore_protection":true}"#,
+        ] {
             let result: proto::IntentResult = dispatch(
                 &s,
                 &intents,
                 proto::Id::Number(1),
-                &proto::Call::RobotEnable(proto::EnableParams {
-                    on: true,
-                    toggle: false,
-                    stand_up: true,
-                    ignore_protection,
-                }),
+                &proto::Call::RobotEnable(serde_json::from_str(json).unwrap()),
             )
             .result_as()
             .unwrap();
@@ -4137,7 +4136,10 @@ mod tests {
             );
             assert_eq!(
                 intents.take_power_request(),
-                Some(intents::PowerRequest::StandUp { ignore_protection })
+                Some(intents::PowerRequest::StandUp {
+                    ignore_protection: true
+                }),
+                "stand_up must override protection regardless of client parameters: {json}"
             );
         }
     }

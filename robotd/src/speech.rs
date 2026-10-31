@@ -52,6 +52,8 @@ pub struct Packet {
     pub drive: Option<Drive>,
     pub action: Option<Action>,
     ready: bool,
+    #[serde(default)]
+    failed: bool,
     reason: String,
 }
 
@@ -238,6 +240,9 @@ async fn session(
             line = output.next_line() => {
                 let line = line?.ok_or("语音识别进程退出，请查看 robotd 日志")?;
                 let packet: Packet = serde_json::from_str(&line)?;
+                if packet.failed {
+                    return Err(packet.reason.into());
+                }
                 speech.publish(request.epoch, true, if packet.ready { "on" } else { "starting" }, packet.reason.clone());
                 // An off/on request invalidates packets from the old process before its kill lands.
                 if *control.borrow() == request {
@@ -290,6 +295,7 @@ mod tests {
                     drive: Some(Drive::Walk),
                     action: None,
                     ready: true,
+                    failed: false,
                     reason: String::new(),
                 },
                 sequence: 1,
@@ -314,6 +320,38 @@ mod tests {
         s.publish(1, true, "on", String::new());
         assert!(!s.active.load(Ordering::Acquire));
         assert!(!s.request(None).enabled);
+    }
+
+    #[tokio::test]
+    async fn recognition_failure_reaches_the_feature_status() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join(".venv/bin")).unwrap();
+        std::os::unix::fs::symlink(
+            "/usr/bin/python3",
+            directory.path().join(".venv/bin/python"),
+        )
+        .unwrap();
+        std::fs::write(directory.path().join("recognize.py"), "raise SystemExit(2)\n").unwrap();
+        let mut state = RobotState::new(&super::super::Params::default(), false, false);
+        state.speech = Speech::new(directory.path().into());
+        let state = Arc::new(state);
+        let task = tokio::spawn(run(Arc::clone(&state), Arc::new(Intents::new())));
+        state.speech.request(Some(true));
+        let result = tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                let status = state.speech.request(None);
+                if status.state == "error" {
+                    break status;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        task.abort();
+        let _ = task.await;
+        let status = result.expect("recognizer failure was not reported");
+        assert!(!status.enabled);
+        assert!(status.reason.contains("语音停用"), "{}", status.reason);
     }
 
     #[tokio::test]

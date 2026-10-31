@@ -42,7 +42,7 @@
 这两个网页按钮执行相同的流程：检查 `robot.health` 和 `robot.subscribe` 返回的 StandUp 模型，清零旧运动指令，再发送一次显式起身请求。
 
 ```json
-{"jsonrpc":"2.0","id":101,"method":"robot.enable","params":{"on":true,"toggle":false,"stand_up":true,"ignore_protection":true}}
+{"jsonrpc":"2.0","id":101,"method":"robot.enable","params":{"on":true,"stand_up":true}}
 ```
 
 这是会让机器人运动的请求。一般直接使用按钮即可；需要调试协议时，可把完整 JSON 放入网页底部 **CONSOLE → raw** 输入框，点击 **send**。
@@ -60,8 +60,10 @@
 
 仅忽略本次恢复的**倒地和软件过流保护**。模型是否已加载、传感器读取、IMU 就绪、目标值有限性及关节范围检查仍生效；舵机自身的硬件保护和 EEPROM 设置没有改变。
 
-`ignore_protection` 默认是 `false`，只有 `on=true`、`toggle=false`、`stand_up=true` 的组合才能使用它。
-键盘 Enter、手柄和自动倒地恢复不会自动获得本次网页请求的豁免。
+`robotd` 统一处理显式起身请求：`on=true`、`toggle=false`（可省略）、`stand_up=true` 时，
+始终按 `ignore_protection=true` 执行，与使用网页或其他客户端无关。省略 `ignore_protection`
+或显式填写 `false` 都不会保留本次恢复中的倒地／软件过流保护；该字段仅为旧客户端兼容保留。
+没有 `stand_up=true` 的普通使能，以及自动倒地恢复，不会获得这一豁免。
 键盘 Enter 原有的重启服务流程与网页请求不同，但使用同一个 StandUp 起身模型。
 
 注意：网页上的 **init · 起身** 是按钮名称；它现在发送的是上述 `robot.enable` 请求。协议原有的 `robot.init` 仍是原有初始化动作，不等于这个按钮。
@@ -91,6 +93,9 @@
 
 连接后，在“语音与视觉”区域点击 **开启语音识别**。这是机器人上的麦克风，浏览器无需申请麦克风权限。
 状态由机器人返回，依次显示“启动中”“已开启”；启动失败会显示原因。点击 **关闭语音识别** 会结束识别、录音进程，并取消仍由语音控制的运动。
+
+首次加载语音模型最多等待 **90 秒**，收到真实音频心跳后才显示已开启；启动时请勿反复切换开关。录音就绪后的音频心跳期限仍为 **0.8 秒**，没有随启动等待延长。
+若报“语音模型启动超时”，先查看 `sudo journalctl -u robotd -n 100 --no-pager`，检查模型加载、麦克风及 CPU 散热。旧版适配器只等 20 秒，在 192.168.3.130 上模型加载实测约 33.4 秒，会被误判为启动失败；此修复需更新 robotd。
 
 - 单独开启语音不会使能电机或起身。先手动完成 StandUp，再说“前进、后退、停止、坐下、起来”。
 - 前进 / 后退为 ±0.10 m/s，最多持续 3 秒；起步、换向和坐下仍需满足原有的零速等待与姿态检查。
@@ -217,13 +222,14 @@ sudo journalctl -u robotd -n 40 --no-pager -o cat
 
 ## 9. 编译和验证
 
-本次参数贯穿 mediad 与 robotd，两个程序必须一同更新。交叉编译：
+显式起身自动豁免由 `robotd` 执行，已有支持 `stand_up` 的客户端及 `mediad` 无需修改。
+此次更新只需替换 `robotd`。交叉编译：
 
 ```bash
-bash build.sh -p robotd -p mediad --offline
+bash build.sh -p robotd --offline
 ```
 
-输出位于 `target/native/aarch64-unknown-linux-gnu/release/`。部署前备份当前两个二进制，在机器人停止动作后替换并重启服务，再强制刷新页面。不要通过修改全局 `fall_protection` / `overcurrent_protection` 来代替这次有期限的豁免。
+输出位于 `target/native/aarch64-unknown-linux-gnu/release/robotd`。部署前备份当前二进制，在机器人停止动作后替换并重启服务。不要通过修改全局 `fall_protection` / `overcurrent_protection` 来代替这次有期限的豁免。
 
 自动测试：
 
@@ -233,7 +239,7 @@ python -m unittest scripts.test_web_console -v
 ```
 
 浏览器测试需要 Playwright；`WEB_TEST_BROWSER` 可指定本机 Edge 路径。测试中的 RPC 全部被替换，网络请求被拦截，不会触碰真实机器人。
-新增 Rust 测试覆盖旧客户端默认不开启豁免、参数组合校验、请求不会继承豁免、原有过流锁定解除、恢复结束后重新检测电流和倒地、超时锁定保留，以及关节目标检查不受影响。
+Rust 测试覆盖显式起身请求在省略或填写任意布尔 `ignore_protection` 时均开启豁免、参数组合校验、请求不会继承豁免、原有过流锁定解除、恢复结束后重新检测电流和倒地、超时锁定保留，以及关节目标检查不受影响。
 
 ### 语音／视觉开关验证记录
 
@@ -242,6 +248,15 @@ python -m unittest scripts.test_web_console -v
 - 整个 Rust 工作区 `cargo check --workspace --offline --locked` 通过。工作区协议／BLE／媒体测试通过；robotd 完整测试仍有下节列出的 5 项原有失败。
 - robotd 和 mediad 的 aarch64 程序已编译，保存在仓库 `tmp/feature-switch-release/`，SHA-256 记录在同目录 `manifest.json`。构建基于用户提交的 master `0edf110`，包含空闲手柄不取消语音的修正；该修正的专项测试通过。该目录中的 robotd 随下述嘴部 ID 修复同步更新。
 - 最初因旧 IP `172.20.10.5` 无法访问而未部署；2026-10-31 18:32 已连接新 IP `192.168.3.127`，核对板上 robotd／mediad 哈希与上述语音开关构建一致，确认程序已安装。真实麦克风与口令动作仍未验证。
+
+### 语音启动超时修复记录（2026-10-31）
+
+- `192.168.3.130` 的模型初始化实测约 33.4 秒，超过旧适配器的 20 秒限制。首次音频等待现为 90 秒，录音就绪后的 0.8 秒心跳期限不变；适配器异常原因会传回网页。
+- Python 语音测试 32 项、robotd 语音测试 6 项通过，覆盖慢加载、启动超时、就绪后音频中断、具体错误返回，以及原有启停和输入门控。
+- 独立适配器在实机约 33.7 秒收到真实麦克风心跳，连续 5 秒保持就绪，退出后无遗留 `arecord`；上下文始终禁止运动，没有连接机器人运动接口。口令识别准确率和实际口令动作尚未验证。
+- 20:40 已安装新 robotd，SHA-256 为 `cca6bdda50b3a4f865e6dcae5a3d5af424ae0303cad0c3ef9488cad5ddea0dc6`；备份位于当前 release 的 `bin/robotd.speech-startup-backup-20261031-204042`。此次只替换 robotd，保留之前同步读修复。
+- 重启后 `robot.speech` 为关闭，`torque_off=true`，控制循环约 50 Hz。诊断期间曾读到 CPU 约 110°C、频率 408 MHz；重启后复查约 86°C，仍需检查散热。随后 SSH、8080 和 8443 均超时，网页实际开关流程暂未验证完成。
+- 构建、安装及验证记录在 `tmp/speech-startup-fix/`；板上安装包在 `/home/radxa/speech-startup-fix-20261031`。
 
 ### 舵机 ID 修复记录（2026-10-31）
 

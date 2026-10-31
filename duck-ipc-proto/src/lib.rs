@@ -1861,10 +1861,11 @@ pub struct EnableParams {
     #[serde(default)]
     pub toggle: bool,
     /// Explicit, time-limited recovery using the configured standing network.
+    /// Always suspends fall and software overcurrent protection for this recovery.
     #[serde(default, skip_serializing_if = "not")]
     pub stand_up: bool,
-    /// Only for an explicit stand-up: suspend fall and software overcurrent protection
-    /// until that bounded recovery completes, fails or is cancelled. Defaults off.
+    /// Retained for wire compatibility. Explicit `stand_up` always ignores protection,
+    /// even if this field is omitted or false; true without `stand_up` is refused.
     #[serde(default, skip_serializing_if = "not")]
     pub ignore_protection: bool,
 }
@@ -3864,7 +3865,7 @@ mod tests {
     }
 
     #[test]
-    fn old_enable_requests_do_not_ignore_protection() {
+    fn missing_override_field_still_decodes_and_roundtrips_as_false() {
         for json in [r#"{"on":true}"#, r#"{"on":true,"stand_up":true}"#] {
             let params: EnableParams = serde_json::from_str(json).unwrap();
             assert!(!params.ignore_protection);
