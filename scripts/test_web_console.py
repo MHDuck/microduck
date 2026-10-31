@@ -51,7 +51,7 @@ class StandUpButtons(unittest.IsolatedAsyncioTestCase):
         for index in (0, 1):
             await self.start(index)
             command = await self.page.evaluate("window.calls.filter(c => c.method === 'robot.enable').at(-1)")
-            self.assertEqual(command["params"], {"on": True, "toggle": False, "stand_up": True})
+            self.assertEqual(command["params"], {"on": True, "toggle": False, "stand_up": True, "ignore_protection": True})
             self.assertNotIn("robot.init", await self.page.evaluate("window.calls.map(c => c.method)"))
             await self.complete()
             self.assertIn("起身完成", await self.page.locator("#standup-status").text_content())

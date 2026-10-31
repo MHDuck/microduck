@@ -19,7 +19,8 @@
 //! is the safe state for a biped; losing balance is a different event, and it is not this
 //! layer's to answer.
 //!
-//! Overcurrent latches until restart; explicit bounded stand-up may release a fall latch.
+//! Explicit bounded stand-up may release a fall latch; an opt-in recovery can also suspend
+//! software overcurrent protection until the control loop ends that recovery.
 //! Both `apply` and `set_torque` enforce any remaining latch.
 //! With fall protection disabled, `fallen` remains a report for the optional limp-fall mode.
 
@@ -113,6 +114,7 @@ pub struct Safety<T: RobotIo, U: ImuIo> {
     falling_for: Duration,
     fallen: bool,
     fall_recovery: bool,
+    recovery_ignores_overcurrent: bool,
     overcurrent_ticks: u32,
     protection: Option<Limit>,
     protection_torque_off: bool,
@@ -130,6 +132,7 @@ impl<T: RobotIo, U: ImuIo> Safety<T, U> {
             falling_for: Duration::ZERO,
             fallen: false,
             fall_recovery: false,
+            recovery_ignores_overcurrent: false,
             overcurrent_ticks: 0,
             protection: None,
             protection_torque_off: false,
@@ -146,7 +149,10 @@ impl<T: RobotIo, U: ImuIo> Safety<T, U> {
                 return Err(e);
             }
         };
-        if self.config.overcurrent_protection && self.protection.is_none() {
+        if self.config.overcurrent_protection
+            && !self.recovery_ignores_overcurrent
+            && self.protection.is_none()
+        {
             let total_a = sensors.input_current_a.unwrap_or_else(|| {
                 sensors.currents_ma.iter().map(|v| v.abs()).sum::<f64>() / 1000.0
             });
@@ -168,18 +174,26 @@ impl<T: RobotIo, U: ImuIo> Safety<T, U> {
         self.protection
     }
 
-    pub fn begin_fall_recovery(&mut self) -> Result<(), &'static str> {
-        if self.protection == Some(Limit::Overcurrent) {
+    pub fn begin_fall_recovery(&mut self, ignore_protection: bool) -> Result<(), &'static str> {
+        if self.protection == Some(Limit::Overcurrent) && !ignore_protection {
             return Err("overcurrent protection latched; clear the fault and restart robotd");
         }
         self.protection = None;
         self.protection_torque_off = false;
         self.fall_recovery = true;
+        self.recovery_ignores_overcurrent = ignore_protection;
+        if ignore_protection {
+            self.overcurrent_ticks = 0;
+        }
         Ok(())
     }
 
     pub fn end_fall_recovery(&mut self) {
         self.fall_recovery = false;
+        if self.recovery_ignores_overcurrent {
+            self.overcurrent_ticks = 0;
+        }
+        self.recovery_ignores_overcurrent = false;
         self.falling_for = Duration::ZERO;
     }
 
@@ -475,6 +489,110 @@ mod tests {
             FakeImu::new(),
             SafetyConfig::default(),
         )
+    }
+
+    fn current_limited() -> Safety<FakeIo, FakeImu> {
+        Safety::new(
+            FakeIo::at(DEFAULT_POSITION),
+            FakeImu::new(),
+            SafetyConfig {
+                fall_protection: true,
+                overcurrent_protection: true,
+                // FakeIo reports zero current; use the inclusive threshold to trip it.
+                overcurrent_cutoff_a: 0.0,
+                overcurrent_debounce_ticks: 2,
+                ..SafetyConfig::default()
+            },
+        )
+    }
+
+    #[test]
+    fn ordinary_recovery_keeps_overcurrent_protection() {
+        let mut s = current_limited();
+        s.begin_fall_recovery(false).unwrap();
+        s.read().unwrap();
+        s.read().unwrap();
+        assert_eq!(s.protection(), Some(Limit::Overcurrent));
+        s.end_fall_recovery();
+        assert!(s.begin_fall_recovery(false).is_err());
+        assert!(s.set_torque(true).is_err());
+    }
+
+    #[test]
+    fn explicit_recovery_suppresses_current_only_until_it_ends() {
+        let mut s = current_limited();
+        s.read().unwrap();
+        s.read().unwrap();
+        s.enforce_protection().unwrap();
+        assert_eq!(s.io().torque, Some(false));
+
+        s.begin_fall_recovery(true).unwrap();
+        s.set_torque(true).unwrap();
+        for _ in 0..20 {
+            s.read().unwrap();
+            s.observe(&on_its_side(), Duration::from_millis(20));
+        }
+        assert!(s.fallen(), "still report the angle while recovering");
+        assert_eq!(s.protection(), None);
+
+        s.end_fall_recovery();
+        s.read().unwrap();
+        assert_eq!(s.protection(), None, "restart the current debounce");
+        s.read().unwrap();
+        assert_eq!(s.protection(), Some(Limit::Overcurrent));
+        s.enforce_protection().unwrap();
+        assert_eq!(
+            s.io().torque,
+            Some(false),
+            "cut torque again after recovery"
+        );
+        assert!(
+            s.begin_fall_recovery(false).is_err(),
+            "no inherited override"
+        );
+    }
+
+    #[test]
+    fn explicit_recovery_restores_fall_protection_and_preserves_timeout_latch() {
+        let mut s = safety();
+        s.config.fall_protection = true;
+        s.observe(&on_its_side(), Duration::from_secs(1));
+        assert_eq!(s.protection(), Some(Limit::FallProtection));
+        s.begin_fall_recovery(true).unwrap();
+        s.observe(&on_its_side(), Duration::from_secs(1));
+        assert_eq!(s.protection(), None);
+        s.end_fall_recovery();
+        s.observe(&on_its_side(), Duration::from_secs(1));
+        assert_eq!(s.protection(), Some(Limit::FallProtection));
+
+        s.begin_fall_recovery(true).unwrap();
+        // The loop latches a failed recovery before ending its exemption.
+        s.latch_fall_protection();
+        s.end_fall_recovery();
+        assert_eq!(s.protection(), Some(Limit::FallProtection));
+        assert!(s.set_torque(true).is_err());
+    }
+
+    #[test]
+    fn recovery_override_keeps_target_checks_and_does_not_change_config() {
+        let mut s = safety();
+        s.begin_fall_recovery(true).unwrap();
+        let mut target = DEFAULT_POSITION;
+        target[0] = f64::NAN;
+        assert!(
+            s.apply(target, DEFAULT_POSITION, 100)
+                .unwrap()
+                .limited_by(Limit::NotFinite)
+        );
+        target[0] = 100.0;
+        assert!(
+            s.apply(target, DEFAULT_POSITION, 100)
+                .unwrap()
+                .limited_by(Limit::Range)
+        );
+        s.end_fall_recovery();
+        assert!(!s.config.fall_protection);
+        assert!(!s.config.overcurrent_protection);
     }
 
     #[test]

@@ -35,6 +35,7 @@ const THEREMIN_DOWN: u8 = 2;
 const POWER_INIT: u8 = 1;
 const POWER_RELAX: u8 = 2;
 const POWER_STAND_UP: u8 = 3;
+const POWER_STAND_UP_IGNORE_PROTECTION: u8 = 4;
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
@@ -179,7 +180,9 @@ pub struct Intents {
 pub enum PowerRequest {
     /// Torque on, ramp to the home pose.
     Init,
-    StandUp,
+    StandUp {
+        ignore_protection: bool,
+    },
     /// Torque off. The robot collapses if nothing holds it.
     Relax,
 }
@@ -395,8 +398,15 @@ impl Intents {
         self.power.store(POWER_INIT, Ordering::Relaxed);
     }
 
-    pub fn request_stand_up(&self) {
-        self.power.store(POWER_STAND_UP, Ordering::Relaxed);
+    pub fn request_stand_up(&self, ignore_protection: bool) {
+        self.power.store(
+            if ignore_protection {
+                POWER_STAND_UP_IGNORE_PROTECTION
+            } else {
+                POWER_STAND_UP
+            },
+            Ordering::Relaxed,
+        );
     }
 
     /// Ask the loop to cut power to the joints.
@@ -477,7 +487,11 @@ impl Intents {
         match self.power.swap(POWER_NONE, Ordering::Relaxed) {
             POWER_INIT => Some(PowerRequest::Init),
             POWER_RELAX => Some(PowerRequest::Relax),
-            POWER_STAND_UP => Some(PowerRequest::StandUp),
+            code @ (POWER_STAND_UP | POWER_STAND_UP_IGNORE_PROTECTION) => {
+                Some(PowerRequest::StandUp {
+                    ignore_protection: code == POWER_STAND_UP_IGNORE_PROTECTION,
+                })
+            }
             _ => None,
         }
     }
@@ -511,6 +525,42 @@ impl Intents {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_override_belongs_to_one_power_request() {
+        let intents = Intents::new();
+        intents.request_stand_up(true);
+        assert_eq!(
+            intents.take_power_request(),
+            Some(PowerRequest::StandUp {
+                ignore_protection: true
+            })
+        );
+        assert_eq!(intents.take_power_request(), None);
+        intents.request_stand_up(false);
+        assert_eq!(
+            intents.take_power_request(),
+            Some(PowerRequest::StandUp {
+                ignore_protection: false
+            })
+        );
+    }
+
+    #[test]
+    fn replacing_a_standup_request_drops_its_override() {
+        let intents = Intents::new();
+        intents.request_stand_up(true);
+        intents.request_relax();
+        assert_eq!(intents.take_power_request(), Some(PowerRequest::Relax));
+        intents.request_stand_up(true);
+        intents.request_stand_up(false);
+        assert_eq!(
+            intents.take_power_request(),
+            Some(PowerRequest::StandUp {
+                ignore_protection: false
+            })
+        );
+    }
 
     #[test]
     fn mouth_notifications_have_an_edge_and_age_without_enabling_motion() {

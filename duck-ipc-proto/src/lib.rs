@@ -1186,6 +1186,7 @@ pub mod test_support {
                 on: true,
                 toggle: false,
                 stand_up: false,
+                ignore_protection: false,
             }),
             Call::RobotInit,
             Call::RobotRelax,
@@ -1842,6 +1843,10 @@ pub struct EnableParams {
     /// Explicit, time-limited recovery using the configured standing network.
     #[serde(default, skip_serializing_if = "not")]
     pub stand_up: bool,
+    /// Only for an explicit stand-up: suspend fall and software overcurrent protection
+    /// until that bounded recovery completes, fails or is cancelled. Defaults off.
+    #[serde(default, skip_serializing_if = "not")]
+    pub ignore_protection: bool,
 }
 
 /// What an apply should move to.
@@ -3789,6 +3794,28 @@ macro_rules! log_startup_identity {
 mod tests {
     use super::test_support::every_call;
     use super::*;
+
+    #[test]
+    fn old_enable_requests_do_not_ignore_protection() {
+        for json in [r#"{"on":true}"#, r#"{"on":true,"stand_up":true}"#] {
+            let params: EnableParams = serde_json::from_str(json).unwrap();
+            assert!(!params.ignore_protection);
+            assert!(
+                serde_json::to_value(params)
+                    .unwrap()
+                    .get("ignore_protection")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_standup_override_survives_the_wire() {
+        let json = serde_json::json!({"on": true, "toggle": false, "stand_up": true, "ignore_protection": true});
+        let params: EnableParams = serde_json::from_value(json.clone()).unwrap();
+        assert!(params.ignore_protection);
+        assert_eq!(serde_json::to_value(params).unwrap(), json);
+    }
 
     /// The path a release actually installs to, which is what makes "which version is running"
     /// answerable at all.

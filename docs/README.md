@@ -11,6 +11,7 @@ without hardware, get a dev board, push a branch, release — with pointers to t
 | | |
 |---|---|
 | [`cheatsheet.md`](robot/cheatsheet.md) | Every `robotctl` command. |
+| [`web-control.md`](robot/web-control.md) | 网页连接、StandUp 起身、临时保护豁免、协议与故障排查。 |
 | [`pair-a-gamepad.md`](robot/pair-a-gamepad.md) | Once per pad: pairing mode, `pad pair`, and what to do when it will not bond. |
 | [`cheatsheet-dev.md`](robot/cheatsheet-dev.md) | The commands that need a dev board: branch builds, candidates, dev pushes. |
 | [`bringup-examples.md`](robot/bringup-examples.md) | Cross-compile `imu_probe` / `hls_read` / `hls_control` and copy them onto the Radxa. |

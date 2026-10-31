@@ -191,7 +191,7 @@
       <b>stop</b> zeroes the intents this session is sending. It is not a physical emergency stop —
       nothing here cuts power to the servos — and it is a plain button for that reason.
       <b>enable / init</b> 都请求 StandUp 起身（与键盘 Enter 使用同一起身动作）；请先扶稳机器人。
-      起身最多 12 秒，过流保护仍生效；需要卸力时按 <b>relax</b>。
+      本次起身临时忽略倒地和软件过流保护，最多 12 秒，结束后恢复原保护；按 <b>relax</b> 可取消并卸力。
     </p>
     <p id="standup-status" role="status" aria-live="polite"></p>
   </section>
@@ -651,7 +651,7 @@ function onState(state) {
   if (standUpPending) {
     if (state.policy === "standup") {
       sawStandUp = true;
-      $("standup-status").textContent = "起身中……请保持支撑，等待站稳。";
+      $("standup-status").textContent = "起身中……临时忽略倒地和软件过流保护，请保持支撑。";
     } else if (sawStandUp && state.policy === "stand") {
       finishStandUp("起身完成，可以行走。");
     } else if (sawStandUp && state.policy === "protection") {
@@ -978,8 +978,8 @@ async function standUp() {
     if (models.unavailable || !models.stand) throw new Error(models.unavailable || "未配置 StandUp 模型。");
     await call("robot.stop");
     if (!current()) return;
-    // StandUp owns the reset and fall-recovery window in robotd; do not bypass its safety checks.
-    const result = await call("robot.enable", { on: true, toggle: false, stand_up: true });
+    // robotd bounds the protection override to this one recovery, even if the page disconnects.
+    const result = await call("robot.enable", { on: true, toggle: false, stand_up: true, ignore_protection: true });
     if (!current()) return;
     if (!result.accepted) throw new Error(result.reason || "起身请求被拒绝。");
     $("standup-status").textContent = "已请求起身，等待 StandUp 状态……";

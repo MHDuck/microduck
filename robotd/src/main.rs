@@ -1763,7 +1763,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
         let sensors = coast.sample(fresh);
 
         let mut power_request = intents.take_power_request();
-        if power_request == Some(intents::PowerRequest::StandUp) {
+        if let Some(intents::PowerRequest::StandUp { ignore_protection }) = power_request {
             power_request = None;
             let result = if stand_up_until.is_some() {
                 Err("stand-up recovery already in progress")
@@ -1776,7 +1776,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                     .as_mut()
                     .ok_or("no policy loaded")
                     .and_then(|c| c.stand_up())
-                    .and_then(|_| safety.begin_fall_recovery())
+                    .and_then(|_| safety.begin_fall_recovery(ignore_protection))
             };
             match result {
                 Ok(()) => {
@@ -1796,7 +1796,8 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                     head_ema = [0.0; 4];
                     body_ema = [0.0; 3];
                     tracing::warn!(
-                        "stand-up recovery started; overcurrent protection remains active"
+                        ignore_protection,
+                        "stand-up recovery started; protection override ends with this recovery"
                     );
                 }
                 Err(reason) => tracing::warn!(reason, "stand-up refused"),
@@ -1916,7 +1917,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                     .as_mut()
                     .expect("recovery requires a controller")
                     .stand_up()
-                    .and_then(|_| safety.begin_fall_recovery())
+                    .and_then(|_| safety.begin_fall_recovery(false))
             };
             match result {
                 Ok(()) => {
@@ -2058,7 +2059,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
                     tracing::warn!(error = %e, "cannot cut torque; the robot is still powered")
                 }
             },
-            Some(intents::PowerRequest::StandUp) | None => {}
+            Some(intents::PowerRequest::StandUp { .. }) | None => {}
         }
 
         // One-shot skill requests, taken once per tick like the power request. They need a
@@ -3640,6 +3641,12 @@ fn dispatch(
         // A refusal here is a normal answer with a reason, not an error: the client asked
         // something reasonable and the daemon declined.
         proto::Call::RobotEnable(p) => {
+            if p.ignore_protection && !p.stand_up {
+                return proto::Response::ok(
+                    Some(id),
+                    &proto::IntentResult::refused("ignore_protection requires stand_up=true"),
+                );
+            }
             if p.stand_up {
                 let result = if !p.on || p.toggle {
                     proto::IntentResult::refused("stand_up requires on=true and toggle=false")
@@ -3648,7 +3655,7 @@ fn dispatch(
                 {
                     proto::IntentResult::refused("no stand-up policy loaded")
                 } else {
-                    intents.request_stand_up();
+                    intents.request_stand_up(p.ignore_protection);
                     proto::IntentResult::accepted()
                 };
                 return proto::Response::ok(Some(id), &result);
@@ -3884,6 +3891,7 @@ mod tests {
                 on: true,
                 toggle: false,
                 stand_up: false,
+                ignore_protection: false,
             }),
         )
         .result_as()
@@ -3902,6 +3910,92 @@ mod tests {
 
     fn state() -> RobotState {
         RobotState::new(&Params::default(), false, false)
+    }
+
+    #[test]
+    fn protection_override_requires_an_explicit_standup() {
+        for (on, toggle, stand_up) in [
+            (true, false, false),
+            (false, false, true),
+            (true, true, true),
+        ] {
+            let s = state();
+            let intents = Arc::new(Intents::new());
+            let result: proto::IntentResult = dispatch(
+                &s,
+                &intents,
+                proto::Id::Number(1),
+                &proto::Call::RobotEnable(proto::EnableParams {
+                    on,
+                    toggle,
+                    stand_up,
+                    ignore_protection: true,
+                }),
+            )
+            .result_as()
+            .unwrap();
+            assert!(!result.accepted);
+            assert!(!intents.enabled());
+            assert_eq!(intents.take_power_request(), None);
+        }
+    }
+
+    #[test]
+    fn standup_override_still_requires_a_loaded_policy() {
+        let s = state();
+        s.policies.store(Arc::new(PolicyNames::default()));
+        let intents = Arc::new(Intents::new());
+        let result: proto::IntentResult = dispatch(
+            &s,
+            &intents,
+            proto::Id::Number(1),
+            &proto::Call::RobotEnable(proto::EnableParams {
+                on: true,
+                toggle: false,
+                stand_up: true,
+                ignore_protection: true,
+            }),
+        )
+        .result_as()
+        .unwrap();
+        assert!(!result.accepted);
+        assert_eq!(intents.take_power_request(), None);
+    }
+
+    #[test]
+    fn standup_dispatch_preserves_the_requested_protection_mode() {
+        let s = state();
+        s.policies.store(Arc::new(PolicyNames {
+            stand: Some("standup.onnx".into()),
+            ..PolicyNames::default()
+        }));
+        s.policy_error.store(None);
+        s.protection_latched.store(true, Ordering::Relaxed);
+        let intents = Arc::new(Intents::new());
+        for ignore_protection in [true, false] {
+            let result: proto::IntentResult = dispatch(
+                &s,
+                &intents,
+                proto::Id::Number(1),
+                &proto::Call::RobotEnable(proto::EnableParams {
+                    on: true,
+                    toggle: false,
+                    stand_up: true,
+                    ignore_protection,
+                }),
+            )
+            .result_as()
+            .unwrap();
+            assert!(result.accepted);
+            assert!(
+                !intents.enabled(),
+                "only the control loop may start recovery"
+            );
+            assert_eq!(
+                intents.take_power_request(),
+                Some(intents::PowerRequest::StandUp { ignore_protection })
+            );
+        }
     }
 
     /// A poweroff that powers nothing off — the loop under test must never reach the real

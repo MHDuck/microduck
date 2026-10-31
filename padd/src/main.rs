@@ -366,6 +366,7 @@ fn main() -> std::process::ExitCode {
                 on: false,
                 toggle: true,
                 stand_up: false,
+                ignore_protection: false,
             });
             match request(&mut stream, &mut next_id, &call) {
                 Err(e) => {
