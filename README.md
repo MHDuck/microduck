@@ -126,7 +126,7 @@ bash scripts/provision-board.sh \
 
 若 `.local` 无法解析，直接把最后一项换为实际地址，例如 `radxa@192.168.1.198`。电脑端会安装 mDNS 支持，但 WSL / 路由器是否允许组播仍取决于网络。
 
-脚本完成本地构建、签名打包、板端环境初始化及重启等待、`servo-web` 安装、当前 `robotd` / ONNX / 控制脚本 / 配置同步与校验，以及板端语音依赖、音频库和模型检查。已有安装会先备份到板端 `~/microduck-deploy-backups/before-provision.*/runtime.tar.gz`，再更新程序和配置；不再需要补跑下一节的命令。`--pause-btd-on-pair` 在手柄配对期间暂停 `btd`；`--name Ducky` 设置机器人名称。
+脚本完成本地构建、签名打包、板端环境初始化及重启等待、`servo-web` 安装、当前 `robotd` / `mediad` / `padd` / ONNX / 控制脚本 / 配置同步与校验，以及板端语音依赖、音频库和模型检查。已有安装会先备份二进制、模型、脚本和配置到板端 `~/microduck-deploy-backups/before-provision.*/runtime.tar.gz`，再更新；不再需要补跑下一节的命令。`--pause-btd-on-pair` 在手柄配对期间暂停 `btd`；`--name Ducky` 设置机器人名称。
 
 **会覆盖板端 `/etc/robot/robotd.toml` 并重启 robotd**，板端调好的参数应先同步回仓库。部署使用当前检出的源码与 `policies/` 模型，不自动拉取 Git 或训练新模型。语音安装验证成功后才切换 `~/microduck-speech/current`，默认仍为 `--speech off`；部署不会录音或发起运动测试。语音使用见 [speech/README.md](speech/README.md)。
 
@@ -139,9 +139,9 @@ bash build.sh
 sh xh_push.sh radxa@192.168.2.90
 ```
 
-上传入口为仓库根目录的 [xh_push.sh](xh_push.sh)。`bash build.sh` 生成 `target/native/aarch64-unknown-linux-gnu/release/robotd`；已有最新编译产物时，可直接执行上传命令。
+上传入口为仓库根目录的 [xh_push.sh](xh_push.sh)。`bash build.sh` 默认编译 `robotd`、`mediad`、`padd`，输出到 `target/native/aarch64-unknown-linux-gnu/release/`，并自动准备 ARM64 GStreamer / udev sysroot。已有这三个程序的最新编译产物时，可直接上传。
 
-上传脚本下发 `robotd`、`policies/*.onnx`、控制 / 诊断脚本与 `deploy/robotd.toml`，校验 robotd、键盘脚本和配置的 SHA-256，并重启 `robotd`。不带 `--build` 的 `xh_push.sh` 不会自动编译，所以 Rust 源码更新后先执行上面的 `bash build.sh`；只修改 Python 控制界面时不需要重新编译 robotd。
+上传脚本下发 `robotd`、`mediad`、`padd`、`policies/*.onnx`、控制 / 诊断脚本与 `deploy/robotd.toml`，校验三个二进制、键盘脚本和配置的 SHA-256。更新时先停止三个服务，再启动 `robotd` 并恢复原本运行中的 `mediad` / `padd`；原本停止的客户端保持停止。不带 `--build` 时不会自动编译；也可用 `sh xh_push.sh --build <用户@地址>` 一次编译并上传（Cargo 缓存需齐全）。此入口用于已有运行环境的板子，系统服务定义和运行库由完整部署入口安装。
 
 **上传会覆盖板端 `/etc/robot/robotd.toml`。** 板端调试后的参数应先同步回本地配置。后续更新程序或模型也使用上述命令。
 
@@ -158,7 +158,9 @@ lsattr /boot/armbianEnv.txt
 
 确认属性中出现 `i`。它将文件设为不可变（immutable），阻止改写或删除，详见 [chattr 手册](https://man7.org/linux/man-pages/man1/chattr.1.html)。这能防止误写，但不能保证 TF 卡在异常断电后不损坏；使用完毕请先执行 `sudo poweroff`，待主板关机后再断电。
 
-后续需要修改引导参数、设备树配置，或执行会更新该文件的系统维护时，先在板端解除保护：
+`provision-board.sh` 把 `i` 属性作为“已手工配置”的标记：有 `i` 时保留 `/boot/armbianEnv.txt` 和现有设备树文件，不解除保护；没有 `i` 时按新板流程配置设备树。两种情况都会继续安装设备别名、系统服务、程序、模型和语音环境。
+
+后续确实需要重新配置引导参数或设备树时，先在板端解除保护，再运行部署或手工维护：
 
 ```bash
 sudo chattr -i /boot/armbianEnv.txt

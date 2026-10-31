@@ -15,7 +15,7 @@
 # by an unknown interval and a guess about when to log back in. This waits for the board to
 # come back, streams the log the unattended half writes, and ends on `robotctl health` — so
 # provisioning is one command with continuous output instead of three with a gap.
-# Also updates robotd, policies, configuration and control scripts from this checkout,
+# Also updates robotd, mediad, padd, policies, configuration and control scripts from this checkout,
 # including on an already provisioned board (backed up first). Restarts robotd.
 # Installs and checks the independent speech environment; recognition stays off.
 # Also installs servo-web from this checkout into ~/microduck/tools/servo-web, without starting it.
@@ -664,11 +664,11 @@ fi
 
 if rsh "test -L /opt/robot/daemon/current"; then
     SETUP_ONLY=1
-    say "backing up installed robotd, policies, scripts and configuration before updating"
+    say "backing up installed binaries, policies, scripts and configuration before updating"
     rsh 'set -eu
 mkdir -p "$HOME/microduck-deploy-backups"
 backup=$(mktemp -d "$HOME/microduck-deploy-backups/before-provision.XXXXXX")
-tar -czf "$backup/runtime.tar.gz" -C /opt/robot/daemon/current bin/robotd policies scripts -C /etc/robot robotd.toml
+tar -czf "$backup/runtime.tar.gz" -C /opt/robot/daemon/current bin policies scripts -C /etc/robot robotd.toml
 printf "Backup: %s/runtime.tar.gz\n" "$backup"'
     say "refreshing board environment; current checkout and speech will be installed after reboot"
 fi
@@ -907,7 +907,7 @@ rsh "command -v robotctl >/dev/null 2>&1" \
     || die "robotctl is not installed or the board is unreachable; provisioning completion could not be verified"
 rsh "systemctl cat servo-web.service >/dev/null" \
     || die "servo-web.service is missing; check the installation output before the reboot"
-say "installing this checkout's robotd, configuration, models and control scripts"
+say "installing this checkout's robotd, mediad, padd, configuration, models and control scripts"
 XH_BIN_DIR="$_root/staged" sh "$_root/xh_push.sh" "$HOST"
 say "installing speech dependencies and verifying the model on the board"
 sh "$_root/speech/sync.sh" --install "$HOST"

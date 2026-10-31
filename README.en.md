@@ -142,9 +142,9 @@ bash build.sh
 sh xh_push.sh radxa@192.168.2.90
 ```
 
-The upload entry point is [xh_push.sh](xh_push.sh) in the repository root. `bash build.sh` produces `target/native/aarch64-unknown-linux-gnu/release/robotd`. If that binary is already up to date, run the upload command directly.
+The upload entry point is [xh_push.sh](xh_push.sh) in the repository root. `bash build.sh` builds `robotd`, `mediad`, and `padd` into `target/native/aarch64-unknown-linux-gnu/release/`, preparing the ARM64 GStreamer/udev sysroot automatically. If all three binaries are up to date, run the upload command directly.
 
-The upload script sends `robotd`, `policies/*.onnx`, the control and diagnostic scripts, and `deploy/robotd.toml`. It verifies the daemon binary, keyboard script, and configuration using SHA-256, then reports the deployment result. It also restarts `robotd`. Without `--build`, `xh_push.sh` does not compile automatically: run `bash build.sh` after Rust source changes. Changes limited to the Python control interface do not require rebuilding `robotd`.
+The upload script sends `robotd`, `mediad`, `padd`, `policies/*.onnx`, the control and diagnostic scripts, and `deploy/robotd.toml`. It verifies all three binaries, the keyboard script, and configuration using SHA-256. It stops the three services during replacement, starts `robotd`, and restores only previously running `mediad`/`padd` clients. Stopped clients stay stopped. Without `--build`, it does not compile automatically. Use the full provisioning entry point to install service definitions and runtime libraries on a new board.
 
 **The upload overwrites `/etc/robot/robotd.toml` on the board.** Copy any board-side tuning back into the local configuration first. Use the same commands for subsequent binary or model updates.
 

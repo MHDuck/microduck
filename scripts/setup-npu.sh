@@ -108,6 +108,12 @@ if [ -r /proc/device-tree/npu@fde40000/status ]; then
     NODE_STATUS=$(tr -d '\0' < /proc/device-tree/npu@fde40000/status)
 fi
 
+BOOT_CONFIG_LOCKED=0
+if [ -f /boot/armbianEnv.txt ]; then
+    attrs="$(lsattr -d /boot/armbianEnv.txt)" || die "cannot read boot config attributes; leaving the device tree untouched"
+    case "${attrs%% *}" in *i*) BOOT_CONFIG_LOCKED=1 ;; esac
+fi
+
 # ── the device tree ───────────────────────────────────────────────────────────
 #
 # One property, `status = "okay"`, on a node whose clocks, resets, power domain, IOMMU and
@@ -121,6 +127,8 @@ fi
 # a thing a setup script decides.
 if [ -n "$DRIVER" ]; then
     say "npu driver: ${DRIVER}"
+elif [ "$BOOT_CONFIG_LOCKED" = 1 ]; then
+    say "/boot/armbianEnv.txt is immutable; keeping existing NPU device-tree configuration"
 elif [ -z "$ENABLE_NODE" ]; then
     warn "--no-enable-node: leaving the device tree alone.
   On a stock Armbian image that means the NPU stays disabled and nothing can use the runtime."

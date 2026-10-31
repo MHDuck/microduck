@@ -40,6 +40,7 @@ ONNX_LIB_DIR=/usr/local/lib
 MOTOR_PORT="${MOTOR_PORT:-/dev/ttyS4}"
 
 ENV_TXT=/boot/armbianEnv.txt
+BOOT_CONFIG_LOCKED=0
 
 # Boot args of the *running* kernel. A variable, like MOTOR_PORT and ENV_TXT above, so the
 # console check can be exercised against a fixture instead of only on a board that happens to
@@ -183,13 +184,26 @@ check_environment() {
     arch="$(uname -m)"
     [ "$arch" = aarch64 ] || die "this targets aarch64 boards, and this box is ${arch}"
 
-    for tool in curl tar find install; do
+    for tool in curl tar find install lsattr; do
         command -v "$tool" >/dev/null 2>&1 || die "${tool} is required"
     done
 }
 
 fetch_repo_file() {
     cp "${DUCK_LOCAL_DIR}/$1" "$2"
+}
+
+read_boot_config_state() {
+    [ -f "$ENV_TXT" ] || die "${ENV_TXT} is required"
+    attrs="$(lsattr -d "$ENV_TXT")" || die "cannot read attributes of ${ENV_TXT}; boot configuration left untouched"
+    BOOT_CONFIG_LOCKED=0
+    case "${attrs%% *}" in
+        *i*)
+            BOOT_CONFIG_LOCKED=1
+            say "${ENV_TXT} is immutable; keeping existing device-tree and boot configuration"
+            ;;
+        *) say "${ENV_TXT} is not immutable; configuring device-tree overlays" ;;
+    esac
 }
 
 # Add one word to Armbian's overlays= line without replacing other overlays.
@@ -367,7 +381,7 @@ free_motor_port() {
         fi
     fi
 
-    if [ "$(kernel_console_tty)" = "$tty" ] && [ -f "$ENV_TXT" ] && grep -Eq '^console=(both|serial)$' "$ENV_TXT"; then
+    if [ "$BOOT_CONFIG_LOCKED" = 0 ] && [ "$(kernel_console_tty)" = "$tty" ] && [ -f "$ENV_TXT" ] && grep -Eq '^console=(both|serial)$' "$ENV_TXT"; then
         say "taking the kernel console off the motor UART (console=display)"
         # Two plain substitutions rather than a BRE alternation, which differs between
         # sed dialects and would fail silently by matching nothing.
@@ -451,6 +465,7 @@ free_motor_port() {
 # `DUCK_CAMERA_OVERLAY` selects another module — `radxa-zero3-rpi-camera-v1.3` is the Pi Cam
 # v1.3 / OV5647, which nothing here has tested.
 configure_camera() {
+    [ "$BOOT_CONFIG_LOCKED" = 0 ] || return 0
     dtbo_dir="/boot/dtb-${1}/rockchip/overlay"
     [ -d "$dtbo_dir" ] || dtbo_dir=$(find /boot -maxdepth 3 -type d -path '*/rockchip/overlay' 2>/dev/null | head -1)
     if [ -z "$dtbo_dir" ]; then
@@ -771,7 +786,7 @@ configure_apt_mirrors() {
     done
 }
 
-configure_feetech() {
+configure_feetech_overlays() {
     [ -f "$ENV_TXT" ] || die "${ENV_TXT} is required"
     grep -q '^fdtfile=rockchip/rk3566-radxa-zero3.dtb$' "$ENV_TXT" \
         || die "this wiring requires rk3566-radxa-zero3.dtb"
@@ -789,26 +804,14 @@ configure_feetech() {
         sed -i "s/^overlays=.*/overlays=$new_overlays/" "$ENV_TXT"
         needs_reboot=1
     fi
-    if [ -e /etc/systemd/system/aic3104-init.service ] \
-        || [ -e /usr/local/bin/aic3104-init.sh ]; then
-        say "removing legacy TLV320 mixer service"
-        systemctl disable --now aic3104-init.service >/dev/null 2>&1 || true
-        rm -f /etc/systemd/system/aic3104-init.service /usr/local/bin/aic3104-init.sh
-        systemctl daemon-reload
-    fi
-
     ov_dir="/boot/dtb-$(uname -r)/rockchip/overlay"
     [ -d "$ov_dir" ] || ov_dir=/boot/dtb/rockchip/overlay
     for name in i2c3-m0 i2c4-m0 uart4-m1; do
         [ -f "/boot/overlay-user/microduck-${name}.dtbo" ] || \
             [ -f "${ov_dir}/rk3568-${name}.dtbo" ] || die "missing ${ov_dir}/rk3568-${name}.dtbo"
     done
-    if ! command -v dtc >/dev/null 2>&1 || ! command -v aplay >/dev/null 2>&1 || ! command -v i2cdetect >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
-        apt-get update
-        apt-get install -y --no-install-recommends device-tree-compiler alsa-utils i2c-tools python3
-    fi
     [ -f "${ENV_TXT}.microduck.bak" ] || cp -p "$ENV_TXT" "${ENV_TXT}.microduck.bak"
-    mkdir -p /boot/overlay-user /etc/udev/rules.d /etc/modules-load.d
+    mkdir -p /boot/overlay-user
     for name in i2c3-m0 i2c4-m0 uart4-m1; do
         target="/boot/overlay-user/microduck-${name}.dtbo"
         if [ ! -f "$target" ]; then
@@ -835,6 +838,25 @@ configure_feetech() {
     else
         printf '\nuser_overlays=%s\n' "$user_overlays" >> "$ENV_TXT"
     fi
+}
+
+configure_feetech() {
+    if ! command -v dtc >/dev/null 2>&1 || ! command -v aplay >/dev/null 2>&1 || ! command -v i2cdetect >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+        apt-get update
+        apt-get install -y --no-install-recommends device-tree-compiler alsa-utils i2c-tools python3
+    fi
+    if [ "$BOOT_CONFIG_LOCKED" = 0 ]; then
+        configure_feetech_overlays
+    fi
+    if [ -e /etc/systemd/system/aic3104-init.service ] \
+        || [ -e /usr/local/bin/aic3104-init.sh ]; then
+        say "removing legacy TLV320 mixer service"
+        systemctl disable --now aic3104-init.service >/dev/null 2>&1 || true
+        rm -f /etc/systemd/system/aic3104-init.service /usr/local/bin/aic3104-init.sh
+        systemctl daemon-reload
+    fi
+    # Device aliases and runtime services are still needed on a preconfigured board.
+    mkdir -p /etc/udev/rules.d /etc/modules-load.d
     printf 'i2c-dev\n' > /etc/modules-load.d/microduck-i2c.conf
     modprobe i2c-dev
     printf '%s\n' 'SUBSYSTEM=="i2c-dev", KERNEL=="i2c-3", SYMLINK+="i2c-imu"' > /etc/udev/rules.d/99-robot-i2c-imu.rules
@@ -849,6 +871,7 @@ configure_feetech() {
 
 main() {
     check_environment
+    read_boot_config_state
     persist_self
     configure_apt_mirrors
     configure_feetech
