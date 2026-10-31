@@ -1,14 +1,5 @@
 # Local HD1910 deployment rules
 
-- Active development branch is `dzh_voice`; upstream master `bbfb493` was merged on 2026-10-30.
-  Do not switch/edit/merge into local `master` or `dzh` without explicit user authorization.
-  Task transitions, motor configuration, safety and model choices follow master;
-  voice is an opt-in INPUT adapter to its keyboard loop, never a second robot controller.
-  `--speech off` is the default: no recognizer import/process or microphone access.
-
-This checkout is the deployment half of `F:\Code\microduck_code`. Before editing it, read
-`docs/LOCAL_CUSTOMIZATIONS.md` and the sibling training repo's `docs/AI_HANDOFF.md`.
-
 - Upstream is `https://gitee.com/moheng_robot/microduck_rust.git`; keep `origin` unchanged.
 - Preserve the 61D observation / 14D action policy contract. The mouth is servo 15 and is never a
   policy action.

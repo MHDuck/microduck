@@ -1,47 +1,5 @@
 # dzh_voice迁移、部署与测试（2026-10-29）
 
-## 分支与迁移范围
-
-活动仓库是`F:\Code\microduck_code\microduck_rust`，训练仓库没有切分支或修改。
-新分支`dzh_voice`直接从本次fetch到的`origin/master=7caaae8`创建，不是把旧dzh整支merge过来。
-本地master仍`7a296a9`、dzh仍`08b149e`，二者引用均未移动。origin地址保持墨恒Gitee。
-为避免误推master，dzh_voice初始不设置上游；首次推送显式`git push -u origin dzh_voice`。
-
-迁移：独立KWS识别工程、模型注册/校验、Python3.13兼容、独立打包同步，新增master键盘输入适配。
-声音/大笑/独立嘴部、摄像头检测/按需流等新master已具备，直接保留master实现。
-不迁移：旧模型选择、动作实验、旧SitStand接管3.5秒字段、旧控制器/安全/增益/HOME及独立动作桥。
-robotd/duck-control/robotd-params/mediad/sounds/deploy/policies/xh_push均与该master一致。
-默认键盘按键仍用master（H发声、V右踢、T坐站、Enter重启并StandUp），不是旧dzh按键表。
-
-原未提交修改已双重保存：
-
-- Git stash对象`8f5a58d41ec36be2e67bcb00f4f1075d69f1ec3f`，名称`dzh pre dzh_voice migration 2026-10-29 preserve uncommitted`。
-- 工作区`.recovery-backups/dzh_voice_migration_20261029_162250/`：`dzh-head.zip`是原提交，
-  `worktree/`是原未提交文件，`speech/`是迁移前语音源码。不要删除stash/备份。
-
-旧dzh已提交历史完整保留；未提交现场没有apply到新分支的Rust上。
-需要恢复原现场时，应先保存新分支修改，再经用户确认切回dzh并`git stash apply 上述对象`；不用pop，勿在dzh_voice上apply。
-
-## 1 电脑端：构建并同步最新master程序
-
-先托住/放稳机器人，部署会停止并重启服务。以下在WSL Ubuntu中：
-
-```bash
-cd /mnt/f/Code/microduck_code/microduck_rust
-git branch --show-current
-# 必须是 dzh_voice
-git status --short
-
-# 首次从旧dzh升级必须重新编译master二进制，不能复用旧target成品
-cargo fetch --locked
-sh xh_push.sh --build radxa@192.168.2.70
-```
-
-这保留原xh_push流程，会上传master配置、所有policies/*.onnx、键盘/声音/相机脚本并重启robotd。
-**本次使用master自带模型路径**。不要重新覆盖旧dzh的robotd.toml；模型版本与板端标定需部署前核对。
-仅后续更新Python脚本/模型/配置且Rust未变时可省`--build`。
-本次没有实际连接、上传或启用板子；以下是待用户执行的流程。
-
 ## 2 语音独立同步（不与运动policies混放）
 
 若本地语音models已经准备完整，直接同步，不需重新下载：
@@ -50,39 +8,7 @@ sh xh_push.sh --build radxa@192.168.2.70
 cd /mnt/f/Code/microduck_code/microduck_rust
 python3 speech/prepare.py
 sh speech/sync.sh radxa@192.168.2.70
-```
 
-`prepare.py`已有正确manifest时直接校验返回；首次无模型需独立语音环境：`sh speech/setup.sh`。
-已有Windows `.venv`不能在WSL复用；可先用Windows独立语音Python完成prepare，WSL只校验和打包，
-板端setup创建自己的Linux环境。源码/关键词/模型manifest不要混用旧发布目录。
-
-上传会输出新的`~/microduck-speech/releases/speech-时间戳-编号`，不会自动切当前版本。
-板端执行（把第一行替换为本次实际名称，**不要写字面占位符**）：
-
-```bash
-ssh radxa@192.168.2.70
-SPEECH_RELEASE="$HOME/microduck-speech/releases/speech-本次时间戳-编号"
-test -f "$SPEECH_RELEASE/keyboard_input.py" || exit 1
-cd "$SPEECH_RELEASE"
-sh setup.sh
-.venv/bin/python recognize.py --check
-.venv/bin/python recognize.py --seconds 30
-```
-
-确认五个口令命中、设备正确，再切换软链接（仅管理软链接，不覆盖实体目录）：
-
-```bash
-cd /home/radxa/microduck-speech
-for link in current previous; do
-  if [ -e "$link" ] && [ ! -L "$link" ]; then
-    echo "$link是实体文件/目录，先人工检查，停止切换"; exit 1
-  fi
-done
-if [ -L current ]; then
-  ln -sfn "$(readlink current)" previous
-fi
-ln -sfn "$SPEECH_RELEASE" current
-```
 
 如果`previous`已是实体目录同样先人工处理；不要删除原版本或其虚拟环境。
 有麦克风设备变化时传`--speech-device`；`arecord -l`可只读查看。

@@ -20,7 +20,7 @@ class SpeechTests(unittest.TestCase):
         import builtins
         from types import SimpleNamespace
         setup = (Path(__file__).parent / "setup.sh").read_text(encoding="utf-8")
-        gate = next(line for line in setup.splitlines() if line.startswith("python3 -c "))
+        gate = next(line for line in setup.splitlines() if line.startswith('"$python" -c '))
         code = shlex.split(gate)[2]
         for version, accepted in (((3, 10, 9), False), ((3, 11, 0), True), ((3, 12, 14), True),
                                   ((3, 13, 5), True), ((3, 14, 0), False)):

@@ -105,57 +105,34 @@ obs [1, 61] → ONNX policy → actions [1, 14]
 
 下文以 `radxa@192.168.2.90` 为例；请替换为首次启动时设置的用户名和主板实际 IP。
 
-### 4.2 PC 端准备 WSL Ubuntu 环境
+### 4.2 PC 端准备
 
-在 PC 的 **Ubuntu / WSL Ubuntu** 中操作，下面的统一准备清单以 **Ubuntu 24.04 LTS** 为基线。需要更换国内源时，按[清华大学 Ubuntu 镜像使用说明](https://mirrors.tuna.tsinghua.edu.cn/help/ubuntu/)选择与本机 Ubuntu 版本一致的配置。
+在新的 **Ubuntu / WSL Ubuntu** 中拿到完整仓库，进入仓库根目录即可运行下一节的一条命令。电脑和板子需要联网，板端须已安装本项目支持的 Radxa 系统、开启 SSH，并有可执行 `sudo` 的账号。
 
-先启用 Universe 软件源，再一次安装本项目 SSH 部署、本机构建和开发检查使用的 APT 软件包；间接依赖由 APT 自动安装：
+脚本自动安装缺少的 APT 工具、Rust（至少 1.89）、ARM64 目标、Zig 构建环境及依赖，配置 SSH 公钥登录，并准备语音模型。Ubuntu 22.04 的 Python 3.10 或较新系统的 Python 3.14 会使用独立的 Python 3.12 语音环境，不替换系统 Python。无需提前执行 `setup-build.sh`、`ssh-copy-id` 或手动创建虚拟环境。
 
-```bash
-sudo apt update
-sudo apt install -y software-properties-common
-sudo add-apt-repository -y universe
-sudo apt update
-sudo apt install -y \
-  git curl ca-certificates openssh-client \
-  build-essential pkg-config cmake binutils \
-  gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross \
-  python3 python3-venv python3-pip \
-  libudev-dev libdbus-1-dev libssl-dev \
-  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev \
-  nodejs npm \
-  bash coreutils findutils grep sed gawk tar gzip xz-utils zstd unzip file
-```
+使用普通用户运行，按提示输入本机 sudo、板端登录和板端 sudo 密码；重启后的新 SSH 会话可能再次要求板端 sudo 密码。首次下载和编译耗时较长，失败后修复报错并重跑同一命令。默认使用国内 Rust / PyPI 镜像；已有镜像环境变量会保留。
 
-克隆或更新本仓库，进入仓库根目录。APT 不负责安装本项目使用的 Rust / Zig 工具链，还需执行：
+### 4.3 一条命令部署
 
-```bash
-bash setup-build.sh
-source "$HOME/.cargo/env"
-rustup target add aarch64-unknown-linux-gnu
-cargo fetch --locked
-```
-
-Rust 版本要求为 1.89 或更新版本。`setup-build.sh` 配置 Rust、Python 虚拟环境、`cargo-zigbuild` 与 `ziglang==0.14.1`，使用国内 Rust 镜像和清华 PyPI 镜像。ARM64 的 GStreamer / udev 库由部署脚本准备独立 sysroot，不能用 PC 的同名库代替。各包用途、可选的 PC 蓝牙支持和非 APT 依赖见 [完整软件清单](重新部署软件.md#pc-packages)。
-
-### 4.3 部署系统服务
-
-先完成模型准备，并核对 [deploy/robotd.toml](deploy/robotd.toml) 中的串口、IMU 和策略配置。在 **PC 的 Linux / WSL 终端**中，从仓库根目录执行：
+确认仓库中的 [deploy/robotd.toml](deploy/robotd.toml) 与机器人的串口、IMU、舵机和模型匹配，托稳机器人并退出旧键盘控制程序。在 **PC 的 Ubuntu / WSL 终端**中执行：
 
 ```bash
 bash scripts/provision-board.sh \
   --pause-btd-on-pair \
   --name Ducky \
-  radxa@192.168.2.90
+  radxa@radxa.local
 ```
 
-脚本从当前源码构建并打包服务，初始化或刷新板端环境；过程中可能重启主板。`--pause-btd-on-pair` 配置手柄配对兼容行为，在配对期间暂停 `btd`；`--name Ducky` 设置机器人名称。脚本会为本地构建准备签名密钥，私钥保存在仓库外，并安装 `servo-web` 校准网页服务。
+若 `.local` 无法解析，直接把最后一项换为实际地址，例如 `radxa@192.168.1.198`。电脑端会安装 mDNS 支持，但 WSL / 路由器是否允许组播仍取决于网络。
 
-板端已有 `/opt/robot/daemon/current` 时，此步骤刷新环境而不替换现有运行时版本，仍需继续下一步推送。脚本不会自动更新 PC 上的源码和模型；“最新”指本机已准备好的版本。失败时先按 [部署排错](重新部署软件.md#deploy-errors) 处理，成功后再继续。
+脚本完成本地构建、签名打包、板端环境初始化及重启等待、`servo-web` 安装、当前 `robotd` / ONNX / 控制脚本 / 配置同步与校验，以及板端语音依赖、音频库和模型检查。已有安装会先备份到板端 `~/microduck-deploy-backups/before-provision.*/runtime.tar.gz`，再更新程序和配置；不再需要补跑下一节的命令。`--pause-btd-on-pair` 在手柄配对期间暂停 `btd`；`--name Ducky` 设置机器人名称。
 
-### 4.4 下发模型和程序
+**会覆盖板端 `/etc/robot/robotd.toml` 并重启 robotd**，板端调好的参数应先同步回仓库。部署使用当前检出的源码与 `policies/` 模型，不自动拉取 Git 或训练新模型。语音安装验证成功后才切换 `~/microduck-speech/current`，默认仍为 `--speech off`；部署不会录音或发起运动测试。语音使用见 [speech/README.md](speech/README.md)。
 
-系统服务部署完成后，在 **PC 的 Linux / WSL 终端、仓库根目录**执行：
+### 4.4 后续仅更新模型和程序（可选）
+
+完整部署已包含此步骤。以后只需更新程序和模型时，可以在 **PC 的 Linux / WSL 终端、仓库根目录**执行：
 
 ```bash
 bash build.sh

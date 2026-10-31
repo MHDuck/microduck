@@ -7,16 +7,17 @@
 # normal case on this hardware: mDNS on the Radxa image is unreliable, so `radxa-zero3.local`
 # resolves when it feels like it and a DHCP lease is the thing you can count on.
 #
-# The only script in this directory that runs on the *operator's* machine rather than on a
-# robot. Everything it does, it does over ssh; nothing here is installed anywhere.
+# Runs on the operator's Ubuntu/WSL machine. Installs missing host build tools,
+# prepares the speech model, and sets up SSH key login before changing the board.
 #
 # What it is for is the seam in the middle. `provision.sh` reboots the board and finishes on
 # its own, which is right, but from the outside that looks like an ssh session dying followed
 # by an unknown interval and a guess about when to log back in. This waits for the board to
 # come back, streams the log the unattended half writes, and ends on `robotctl health` — so
 # provisioning is one command with continuous output instead of three with a gap.
-# When a daemon release already exists, the same entrypoint refreshes board environment only;
-# it does not replace that release.
+# Also updates robotd, policies, configuration and control scripts from this checkout,
+# including on an already provisioned board (backed up first). Restarts robotd.
+# Installs and checks the independent speech environment; recognition stays off.
 # Also installs servo-web from this checkout into ~/microduck/tools/servo-web, without starting it.
 # After provisioning: sudo systemctl restart servo-web (web port 8081; stops the control daemons).
 #
@@ -56,8 +57,9 @@
 #                     for how to check, and `configure_bluetooth` in scripts/setup-board.sh for
 #                     the measurement behind it.
 #
-# Needs `ssh` and `scp`, an account on the board that can `sudo`, and nothing else. It expects
-# to be able to prompt for the sudo password, so it allocates a terminal for that one command.
+# Needs this complete checkout, internet access, and a reachable supported Radxa board.
+# Ubuntu host dependencies are automatic; other hosts need setup-build.sh's tools already.
+# Run as your normal user. SSH and sudo passwords are prompted in this terminal as needed.
 #
 # ## When the board comes back at a different address
 #
@@ -192,6 +194,16 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$HOST" ] || usage 2
+
+_root="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -f /etc/os-release ] && grep -Eq '^ID="?ubuntu"?$' /etc/os-release; then
+    say "preparing Ubuntu host tools (first run needs internet and local sudo)"
+    bash "$_root/setup-build.sh"
+    . "$HOME/.cargo/env"
+    . "$HOME/.local/share/duck-build/bin/activate"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_ZIGBUILD_PYTHON_PATH="$VIRTUAL_ENV/bin/python"
+fi
 
 command -v ssh >/dev/null 2>&1 || die "ssh is required"
 command -v scp >/dev/null 2>&1 || die "scp is required"
@@ -558,10 +570,16 @@ if ! _probe="$(rsh true 2>&1)"; then
     ssh-keygen -R ${HOST_ONLY}
   Or re-run this with --forget-host-key, which does that first." ;;
         *"Permission denied"*)
-            die "${HOST} refused the key.
-  This needs to reconnect by itself after the board reboots, which a password prompt cannot
-  survive, so key access is not optional here:
-    ssh-copy-id ${HOST}" ;;
+            say "setting up SSH key login; enter the board login password when prompted"
+            _ssh_key="$HOME/.ssh/id_ed25519"
+            if [ ! -f "${_ssh_key}.pub" ]; then
+                [ ! -e "$_ssh_key" ] || die "${_ssh_key}.pub is missing; restore it from the existing private key"
+                mkdir -p "$HOME/.ssh"
+                chmod 700 "$HOME/.ssh"
+                ssh-keygen -q -t ed25519 -N '' -f "$_ssh_key"
+            fi
+            ssh-copy-id -i "${_ssh_key}.pub" -o StrictHostKeyChecking=accept-new "$HOST"
+            rsh true || die "SSH key login still fails; load a passphrase-protected key with ssh-add and re-run" ;;
         *"Could not resolve"*|*"Name or service not known"*|*"nodename nor servname"*)
             # The advice splits on what was actually passed: telling someone who gave an
             # address to "use the address instead" is the kind of message that makes a tool
@@ -586,7 +604,9 @@ ${_probe}" ;;
     esac
 fi
 
-sh "$(dirname "$0")/dev-push.sh" --package-only
+say "preparing speech dependencies and model locally (no microphone access)"
+PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}" sh "$_root/speech/setup.sh"
+sh "$_root/scripts/dev-push.sh" --package-only
 if [ "$DEV_KEY" = "$DEV_KEY_DEFAULT" ]; then
     DEV_KEY="${DUCK_DEV_SECRET_KEY:-$HOME/.duck-keys/local.dev.key}"
     DEV_KEY="${DEV_KEY%.key}.pub"
@@ -644,7 +664,13 @@ fi
 
 if rsh "test -L /opt/robot/daemon/current"; then
     SETUP_ONLY=1
-    say "an installed release was found; this run will refresh board environment only"
+    say "backing up installed robotd, policies, scripts and configuration before updating"
+    rsh 'set -eu
+mkdir -p "$HOME/microduck-deploy-backups"
+backup=$(mktemp -d "$HOME/microduck-deploy-backups/before-provision.XXXXXX")
+tar -czf "$backup/runtime.tar.gz" -C /opt/robot/daemon/current bin/robotd policies scripts -C /etc/robot robotd.toml
+printf "Backup: %s/runtime.tar.gz\n" "$backup"'
+    say "refreshing board environment; current checkout and speech will be installed after reboot"
 fi
 
 if [ -n "$DEV_KEY" ] && [ -z "$SETUP_ONLY" ]; then
@@ -659,7 +685,6 @@ _local="$(dirname "$0")/provision.sh"
   Run this from the local checkout."
 say "sending this clone's provision.sh"
 scp -q "$_local" "$(scp_target /tmp/provision.sh)" || die "could not copy provision.sh"
-_root="$(cd "$(dirname "$0")/.." && pwd)"
 say "packaging servo-web from this checkout"
 python3 "$_root/tools/servo-web/package.py"
 _remote_local="/var/lib/robot/provision-local-$(date +%s)-$$"
@@ -882,11 +907,11 @@ rsh "command -v robotctl >/dev/null 2>&1" \
     || die "robotctl is not installed or the board is unreachable; provisioning completion could not be verified"
 rsh "systemctl cat servo-web.service >/dev/null" \
     || die "servo-web.service is missing; check the installation output before the reboot"
-if [ -n "$SETUP_ONLY" ]; then
-    say "board environment refreshed; installed daemon release is unchanged"
-else
-    say "provisioning finished"
-fi
+say "installing this checkout's robotd, configuration, models and control scripts"
+XH_BIN_DIR="$_root/staged" sh "$_root/xh_push.sh" "$HOST"
+say "installing speech dependencies and verifying the model on the board"
+sh "$_root/speech/sync.sh" --install "$HOST"
+say "provisioning finished; speech is installed, keyboard default remains --speech off"
 say "servo-web is installed; to debug, support the robot and run: sudo systemctl restart servo-web"
 say "servo-web listens on port 8081; starting it stops padd, mediad, robotd and tofd"
 

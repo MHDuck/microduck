@@ -287,7 +287,7 @@ sh xh_push.sh --build radxa@10.138.16.248
 sh xh_push.sh radxa@10.138.16.248
 ```
 
-首次板端环境初始化才运行：
+完整部署或重新部署可统一运行（Ubuntu 主机工具、SSH 密钥、板端初始化、当前程序 / 模型 / 配置及语音环境都会处理，语音仍默认 off）：
 
 ```bash
 ./scripts/provision-board.sh --no-ble radxa@10.138.16.248

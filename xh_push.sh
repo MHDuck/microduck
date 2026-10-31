@@ -47,15 +47,19 @@ keyboard_sha=$(sha256sum scripts/keyboard-control.py)
 keyboard_sha=${keyboard_sha%% *}
 printf '==> source config: %s/deploy/robotd.toml\n' "$PWD"
 echo "==> uploading to $board"
+case "${board#*@}" in
+    *:*) destination="${board%${board#*@}}[${board#*@}]" ;;
+    *) destination=$board ;;
+esac
 incoming=".cache/xh-push/upload-$(date +%Y%m%d-%H%M%S)-$$"
 ssh "$board" "mkdir -p .cache/xh-push && mkdir '$incoming'"
 scp "$bin_dir/robotd" deploy/robotd.toml \
     scripts/keyboard-control.py scripts/duck-voice.py scripts/camera-detect-test.py \
     scripts/standup-test.py \
-    "$@" "$board:$incoming/"
+    "$@" "$destination:$incoming/"
 
 echo '==> replacing robotd, ONNX and config'
-ssh -tt "$board" "incoming='$incoming'
+ssh -tt -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=6 "$board" "incoming='$incoming'
 "'
 set -eu
 incoming="$HOME/$incoming"

@@ -7,12 +7,14 @@
 - `recognize.py`：纯识别，不连接robotd，不使能舵机。
 - `keyboard_input.py`：可选输入适配器，无socket、无RPC；由master键盘主循环调用。
 - `catalog.json`：可维护的模型注册表。模型在`models/<id>`，独立`.venv`，不提交模型/虚拟环境。
-- `sync.sh`：单独上传语音发布目录，不重启服务、不自动切换当前版本。
+- `sync.sh`：默认仅上传语音发布目录；加 `--install` 自动安装板端依赖并在检查通过后切换 `current`，不启动识别或重启 robotd。
 
 仅白名单：“前进”“后退”“停止”“坐下”“起来”。不是任意中文ASR。
 短词比原来的带前缀口令更容易被日常对话误触发，先用`--speech preview`测试；默认仍为off。
 修改关键词需重新运行prepare，检查`models/<id>/keywords.txt`及manifest；不要只改显示文案。
 Python支持3.11/3.12/3.13，NumPy按解释器版本固定，sherpa-onnx仍1.13.8；保持现有版本规则。
+
+完整新板部署直接使用根目录的 `bash scripts/provision-board.sh --pause-btd-on-pair --name Ducky radxa@radxa.local`，已包含本节的准备、同步、音频库安装和模型检查。Ubuntu 主机不兼容的系统 Python 会由主入口自动补充独立 Python 3.12；`setup.sh` 复用已有兼容环境，也可用 `PYTHON=/path/to/python3.12` 指定解释器。
 
 ```bash
 # 本地Linux/WSL首次准备；Windows也可用独立Python3.12环境运行prepare
@@ -20,6 +22,8 @@ sh speech/setup.sh
 speech/.venv/bin/python speech/recognize.py --check
 sh speech/sync.sh radxa@192.168.2.70
 ```
+
+只更新语音并自动安装、切换版本时使用 `sh speech/sync.sh --install radxa@192.168.1.198`。安装失败保留旧 `current`；成功只代表依赖与模型加载通过，麦克风测试仍需手动运行。上传包不含电脑的 `.venv`；若本地有 `dist/wheels-cp313-aarch64/*.whl` 完整缓存会一起传送，由板端 pip 选择兼容轮子。
 
 板端先进入上传输出的`~/microduck-speech/releases/speech-时间戳-编号`，运行`sh setup.sh`、
 `.venv/bin/python recognize.py --check`和`.venv/bin/python recognize.py --seconds 30`。
