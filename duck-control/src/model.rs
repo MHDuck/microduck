@@ -16,7 +16,7 @@ pub const NUM_JOINTS: usize = 15;
 /// ID 200 is reserved for an IMU node on the servo bus. It is never a joint.
 pub const JOINT_IDS: [u8; NUM_JOINTS] = [
     20, 21, 22, 23, 24, // left leg
-    30, 31, 32, 33, 15, // neck, head, local HD1910 beak
+    30, 31, 32, 33, 34, // neck, head, mouth (bus ID, not the joint count)
     10, 11, 12, 13, 14, // right leg
 ];
 
@@ -183,7 +183,7 @@ mod tests {
     fn mouth_index_names_the_mouth() {
         assert_eq!(JOINT_NAMES[MOUTH_INDEX], "mouth");
         assert_eq!(joint_index("mouth"), Some(MOUTH_INDEX));
-        assert_eq!(JOINT_IDS[MOUTH_INDEX], 15, "local HD1910 beak address");
+        assert_eq!(JOINT_IDS[MOUTH_INDEX], 34, "local HD1910 beak address");
     }
 
     /// The ends of the span and the middle of it. Getting the direction wrong here would

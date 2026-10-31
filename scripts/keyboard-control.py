@@ -496,7 +496,14 @@ class RobotdDiagnostics:
             except ValueError:
                 self.report(f"journalctl：{line.strip()}")
                 continue
-            message = str(entry.get("MESSAGE", ""))
+            message = entry.get("MESSAGE", "")
+            # journald emits byte arrays for messages containing ANSI control bytes.
+            if isinstance(message, list):
+                try:
+                    message = bytes(message).decode("utf-8", errors="replace")
+                except (TypeError, ValueError):
+                    pass
+            message = str(message)
             plain = re.sub(r"\x1b\[[0-9;]*m", "", message)
             fall_event = next((label for marker, label in (
                 ("fall protection settings", "当前生效的倾倒保护配置"),

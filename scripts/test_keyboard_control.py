@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SCRIPT = Path(__file__).with_name("keyboard-control.py")
 SPEC = importlib.util.spec_from_file_location("keyboard_control_diagnostics", SCRIPT)
@@ -23,6 +23,19 @@ SPEC.loader.exec_module(keyboard_control)
 
 
 class KeyboardControlTests(unittest.TestCase):
+    def test_journal_byte_arrays_report_the_missing_servo(self):
+        plain = "ERROR robotd: cannot open the bus; waiting error=bus transaction failed: servo 15 did not answer ping"
+        colored = "\x1b[31m" + plain + "\x1b[0m"
+        messages = [list(colored.encode("utf-8")), "INFO robotd: 状态正常", [255]]
+        with patch.object(threading.Thread, "start"):
+            diagnostics = keyboard_control.RobotdDiagnostics("/tmp/test-only.sock")
+        diagnostics._process = Mock(stdout=[json.dumps({"MESSAGE": m}) for m in messages])
+        diagnostics._follow()
+        self.assertEqual(diagnostics.last_error, "舵机 ID 15 通信异常")
+        self.assertEqual(diagnostics.messages.get_nowait(), (plain, True, False))
+        self.assertEqual(diagnostics.messages.get_nowait(), ("INFO robotd: 状态正常", False, True))
+        self.assertEqual(diagnostics.messages.get_nowait(), ("�", False, True))
+
     def test_all_axes_increment_reverse_and_clamp_independently(self):
         for axis, positive, negative, limit in ((0, "w", "s", .4), (1, "a", "d", .4), (2, "q", "e", .3)):
             velocity = (0., 0., 0.)

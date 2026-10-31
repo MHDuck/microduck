@@ -1,8 +1,8 @@
 # Local HD1910 deployment rules
 
 - Upstream is `https://gitee.com/moheng_robot/microduck_rust.git`; keep `origin` unchanged.
-- Preserve the 61D observation / 14D action policy contract. The mouth is servo 15 and is never a
-  policy action.
+- Preserve the 61D observation / 14D action policy contract. There are 15 servos; the mouth's
+  bus ID is 34 (verified on hardware 2026-10-31), not 15, and it is never a policy action.
 - Local scope is deliberately narrow: standalone voice + isolated beak, walking random voice, and
   read-only camera/detector diagnostics. Do not re-import the old repository's experimental motor,
   HOME, fall, policy-path, model, or safety edits.

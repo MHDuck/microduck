@@ -3409,13 +3409,21 @@ async fn handle(
 /// client that sends `robot.move` with an `id` is not silently ignored — the spec permits
 /// either, and refusing one because of a framing choice would be a surprise.
 fn apply_intent(intents: &Intents, call: &proto::Call) -> bool {
-    if matches!(
-        call,
-        proto::Call::RobotMove(_)
-            | proto::Call::RobotHead(_)
-            | proto::Call::RobotPose(_)
-            | proto::Call::RobotMouth(_)
-    ) {
+    let previous = intents.snapshot();
+    // An idle pad publishes zero every tick; only activity or a changed target takes over.
+    let manual = match call {
+        proto::Call::RobotMove(p) => {
+            let twist = [p.vx, p.vy, p.vyaw];
+            twist != [0.0; 3] || twist != previous.command.twist
+        }
+        proto::Call::RobotHead(p) => {
+            [p.neck_pitch, p.head_pitch, p.head_yaw, p.head_roll] != previous.command.head
+        }
+        proto::Call::RobotPose(p) => p.active || previous.pose.active,
+        proto::Call::RobotMouth(p) => p.open != previous.mouth,
+        _ => false,
+    };
+    if manual {
         intents.manual_input();
     }
     match call {
@@ -4009,6 +4017,15 @@ mod tests {
         assert_eq!(intents.manual_generation(), 0);
         apply_intent(
             &intents,
+            &proto::Call::RobotMove(proto::MoveParams::default()),
+        );
+        assert_eq!(
+            intents.manual_generation(),
+            0,
+            "idle pad must not cancel speech"
+        );
+        apply_intent(
+            &intents,
             &proto::Call::RobotMove(proto::MoveParams {
                 vx: 0.1,
                 vy: 0.0,
@@ -4016,8 +4033,17 @@ mod tests {
             }),
         );
         assert_eq!(intents.manual_generation(), 1);
-        dispatch(&s, &intents, proto::Id::Number(1), &proto::Call::RobotStop);
+        apply_intent(
+            &intents,
+            &proto::Call::RobotMove(proto::MoveParams::default()),
+        );
         assert_eq!(intents.manual_generation(), 2);
+        dispatch(&s, &intents, proto::Id::Number(1), &proto::Call::RobotStop);
+        assert_eq!(
+            intents.manual_generation(),
+            3,
+            "explicit stop always takes over"
+        );
         let status: proto::FeatureResult = dispatch(
             &s,
             &intents,
@@ -4026,7 +4052,7 @@ mod tests {
         )
         .result_as()
         .unwrap();
-        assert_eq!(intents.manual_generation(), 2);
+        assert_eq!(intents.manual_generation(), 3);
         assert!(!status.enabled && !intents.enabled());
     }
 

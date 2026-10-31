@@ -2,7 +2,7 @@
 
 可通过网页“语音与视觉”开关接入 robotd，或通过 master 键盘程序的 `--speech off|preview|on` 接入。两者默认 off，请勿同时占用麦克风。
 关键词为“前进、后退、停止、坐下、起来”，不再需要“鸭子”前缀。前/后退分别±0.10m/s，最多3秒。
-完整命令见[迁移部署与测试](../docs/dzh_voice_迁移部署与测试.md)。
+完整命令见[语音说明](README.md)与[网页控制指南](../docs/robot/web-control.md)。
 
 不要再运行旧dzh的`speech/control.py --execute`，也不要把旧Rust控制器覆盖回本分支。
 语音只产生意图；键盘模式由同一键盘循环处理，网页模式由 robotd 控制循环处理。坐站沿用现有 sit_toggle 模型逻辑，手动输入优先。

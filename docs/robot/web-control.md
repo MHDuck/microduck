@@ -1,11 +1,11 @@
 # 网页端控制完整指南
 
-适用于本仓库 master 的 duck console，更新于 2026-10-31。机器人地址示例为 `172.20.10.5`。
+适用于本仓库 master 的 duck console，更新于 2026-10-31。当前机器人地址为 `192.168.3.127`；换网络后请使用新的 IP。
 
 ## 1. 打开网页并连接
 
 1. 电脑或手机与机器人连接同一局域网。
-2. 使用 Edge / Chrome 打开 `http://172.20.10.5:8080/`。更新程序后先按 **Ctrl+F5** 强制刷新。
+2. 使用 Edge / Chrome 打开 `http://192.168.3.127:8080/`。更新程序后先按 **Ctrl+F5** 强制刷新。
 3. 点击 **connect**，等待顶部同时显示 **connected** 和 **control open**。
 4. 确认 TELEMETRY 持续更新，HEALTH 正常，IMU 就绪。
 5. 给机器人留出起身空间，准备好支撑，再点击 **enable · 起身** 或 **init · 起身**。
@@ -137,7 +137,7 @@
 通过 SSH 排查：
 
 ```bash
-ssh radxa@172.20.10.5
+ssh radxa@192.168.3.127
 systemctl is-active robotd mediad
 sudo journalctl -u robotd -u mediad -n 120 --no-pager
 sudo journalctl -u robotd -f
@@ -157,9 +157,28 @@ readlink -f /opt/robot/daemon/current
 | `no stand-up policy loaded` | 检查当前模式、policy.stand 路径和 ONNX 加载日志 |
 | `unknown field ignore_protection` | mediad 与 robotd 版本不匹配，需要一起更新 |
 | `overcurrent protection latched` | 普通控制或恢复完成后触发了软件过流；结合电流和实际负载排查 |
+| `servo 15 did not answer ping` | 本机嘴部实际为 ID 34；检查是否仍在运行错误使用 ID 15 的旧 robotd |
+| `no robot on the motor bus after ... attempts` | 初始化未通过；查看同一时间的 `cannot open the bus` 具体原因，不能据此认定全部舵机掉线 |
 
 只显示旧的 enable / init 文案时，先 Ctrl+F5；仍旧则检查是否部署了新 mediad。
 网页 HTML 编译进 mediad，单独修改板上的 HTML 文件不会更新服务提供的页面。
+
+### servo-web 正常，但 robotd 找不到舵机
+
+2026-10-31 在 `192.168.3.127` 实测：servo-web 的 `/api/info` 返回 `fake=false`，在线列表为 `10–14`、`20–24`、`30–34`；WebSocket 状态流也读到了这 15 颗舵机的位置、电压和温度，嘴部 ID 34 正常应答。故障版本的 robotd 却把嘴部 ID 写成 15，初始化逐颗 ping 时停在这里，尚未进入 StandUp。**15 是舵机数量，不是嘴部总线地址。** 修复应修改 `duck-control/src/model.rs` 的 ID 映射并重新编译 robotd，无需修改实物舵机 ID、接线或起身保护。
+
+两个网页用途不同：`8081` 是直接操作串口的 servo-web 调试台；`8080` 是通过 robotd 控制的 duck console。板上的 `servo-web.service` 与 `robotd`、`mediad`、`padd`、`tofd` 互斥，不能同时占用硬件。使用已修复的程序切回网页控制模式：
+
+```bash
+sudo systemctl stop servo-web
+sudo systemctl start robotd mediad
+systemctl is-active robotd mediad
+sudo journalctl -u robotd -n 40 --no-pager -o cat
+```
+
+随后打开 `http://192.168.3.127:8080/`，确认健康状态正常再扶稳起身。需要回到 `8081` 调试时，先在控制页按 **relax** 并扶稳，再运行 `sudo systemctl start servo-web`；这会停止上述互斥服务。
+
+键盘日志中的 `[27, 91, ...]` 是 journald 对含 ANSI 颜色码日志输出的 UTF-8 字节数组，并非舵机报文。新版 `keyboard-control.py` 会先解码再显示，并正确提取缺失的舵机 ID。旧脚本可先用上面的 `journalctl ... -o cat` 查看可读原文。
 
 ## 7. WebSocket client 与协议
 
@@ -221,8 +240,21 @@ python -m unittest scripts.test_web_console -v
 - 网页回归 12 项通过，包括明确发送开启／关闭值、预留视觉不可开启、语音错误状态和断线后的迟到回复。
 - Linux 下语音输入与适配测试 29 项通过；机器人语音后台 5 项专项测试通过，涵盖进程启停、录音子进程退出、不使能电机、旧请求失效等。
 - 整个 Rust 工作区 `cargo check --workspace --offline --locked` 通过。工作区协议／BLE／媒体测试通过；robotd 完整测试仍有下节列出的 5 项原有失败。
-- robotd 和 mediad 的 aarch64 程序已编译，保存在仓库 `tmp/feature-switch-release/`，SHA-256 记录在同目录 `manifest.json`。此构建仅叠加本次开关功能，不含工作区其他未提交的舵机和 App 管理改动。
-- 当前电脑到 `172.20.10.5` 的 SSH 超时，尚未部署本次开关功能，也未验证真实麦克风或口令动作。
+- robotd 和 mediad 的 aarch64 程序已编译，保存在仓库 `tmp/feature-switch-release/`，SHA-256 记录在同目录 `manifest.json`。构建基于用户提交的 master `0edf110`，包含空闲手柄不取消语音的修正；该修正的专项测试通过。该目录中的 robotd 随下述嘴部 ID 修复同步更新。
+- 最初因旧 IP `172.20.10.5` 无法访问而未部署；2026-10-31 18:32 已连接新 IP `192.168.3.127`，核对板上 robotd／mediad 哈希与上述语音开关构建一致，确认程序已安装。真实麦克风与口令动作仍未验证。
+
+### 舵机 ID 修复记录（2026-10-31）
+
+- 修正嘴部总线 ID 为 34，同步诊断示例和本地硬件说明；61 维观测／14 维动作及嘴部索引保持原值。
+- 修复键盘客户端对 journald 字节数组日志的解码和故障识别。
+- 控制库测试 93 项、Linux 键盘测试 5 项通过；控制库示例编译检查、aarch64 robotd 构建通过。
+- 新 robotd SHA-256：`cc5ee9037af27b45f16cdbb467205c2e0efc6cb83036335cf4aede9feaffed1e`。
+- 部署包：仓库 `tmp/bus-id-repair.tar.gz`，内有程序、键盘脚本、校验文件和 `install.sh`。安装会备份旧文件，停止 servo-web，启动 robotd／mediad，不发送运动指令。
+- 经用户确认，已于 2026-10-31 18:37（北京时间）部署到 `192.168.3.127`，核对板上文件 SHA-256 与本地构建一致。robotd／mediad 为 active，servo-web 为 inactive；本次没有更改服务的开机启用配置。
+- 真机验证：`healthy=true`，`startup_failures=0`，`consecutive_errors=0`，控制循环约 `50.04 Hz`，IMU `ready=true`，`torque_off=true`；StandUp 模型为 `standup_hd1910_v6.onnx`。
+- 独立 Edge 经网页通道验证 `connected / control open` 和上述健康信息；语音查询为 `available=true, enabled=false, state=off`，视觉为预留状态。验证结果与截图保存在 `tmp/bus-id-repair/`。
+- 验证时机器人处于倒地保护锁定、卸力状态；这与先前总线初始化失败不同。没有自动发送 StandUp 或移动请求，实际起身需在现场扶稳后通过网页按钮验证。
+- 回退备份分别位于当前 release 的 `bin/robotd.bus-id-backup-20261031-183755` 与 `scripts/keyboard-control.py.bus-id-backup-20261031-183755`。旧 robotd 仍使用错误的嘴部 ID 15，回退会恢复该故障。
 
 ### StandUp 验证与部署记录（语音开关改动之前）
 

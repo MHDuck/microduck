@@ -52,7 +52,7 @@ const fn tune(limit_deg: f64, torque: u16) -> Tune {
     Tune { limit_deg, torque }
 }
 
-/// Look up by **servo id**, not by array index. `JOINT_IDS` is 20–24, 30–33, 15,
+/// Look up by **servo id**, not by array index. `JOINT_IDS` is 20–24, 30–34,
 /// 10–14; editing a table in 10–14-first order used to retune the wrong joint
 /// (id 12 kept the old 100 because that slot was `head_yaw`).
 const fn tune_for(id: u8) -> Tune {
@@ -73,7 +73,7 @@ const fn tune_for(id: u8) -> Tune {
         31 => tune(30.0, 100), // head_pitch
         32 => tune(30.0, 100),  // head_yaw
         33 => tune(20.0, 100),  // head_roll
-        15 => tune(12.0, 80),   // mouth
+        34 => tune(12.0, 80),   // mouth
         _ => tune(0.0, 0),
     }
 }
@@ -121,7 +121,7 @@ const POLL: Duration = Duration::from_millis(40);
 /// One triangle per joint: +limit → −limit → 0°. Override with `--cycles`.
 const DEFAULT_CYCLES: u32 = 1;
 
-/// Display / exercise order: IDs 10–14, 20–24, 30–33, 15.
+/// Display / exercise order: IDs 10–14, 20–24, 30–34.
 const COL_ORDER: [usize; NUM_JOINTS] = [10, 11, 12, 13, 14, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
