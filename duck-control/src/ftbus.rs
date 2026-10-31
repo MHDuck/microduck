@@ -393,6 +393,11 @@ struct ReadDiagnostics {
 }
 
 impl ReadDiagnostics {
+    fn recovered(&mut self) {
+        // Clear old faults, but keep the cursor so intermittent errors probe every joint.
+        self.failures.fill(None);
+    }
+
     fn diagnose(&mut self, mut probe: impl FnMut(u8) -> Result<()>) -> String {
         // One read-only probe per failed tick bounds the extra delay to one transaction.
         let joint = self.next;
@@ -416,10 +421,19 @@ impl ReadDiagnostics {
     }
 }
 
+fn sync_read_layout() -> ([u8; NUM_JOINTS], [usize; NUM_JOINTS]) {
+    let mut joints = std::array::from_fn(|joint| joint);
+    // This HD1910 bus corrupts occasional ID 12 replies in policy order; ascending
+    // requests passed the same read-only A/B test. Map replies back to policy order.
+    joints.sort_unstable_by_key(|&joint| JOINT_IDS[joint]);
+    (joints.map(|joint| JOINT_IDS[joint]), joints)
+}
+
 pub struct FeetechIo {
     controller: Sts3215Controller,
-    /// Servo ids in [`crate::model::JOINT_IDS`] order — the order blocks come back in.
-    ids: Vec<u8>,
+    read_ids: [u8; NUM_JOINTS],
+    /// Policy joint index for each block in a sorted sync-read response.
+    read_joints: [usize; NUM_JOINTS],
     /// Supply voltage per joint captured in the last tick's block. Zero until a read happens.
     last_volts: [f64; NUM_JOINTS],
     /// Case temperature per joint from the last tick's block.
@@ -445,9 +459,11 @@ impl FeetechIo {
             .with_protocol_v1()
             .with_serial_port(serial);
 
+        let (read_ids, read_joints) = sync_read_layout();
         let mut io = Self {
             controller,
-            ids: JOINT_IDS.to_vec(),
+            read_ids,
+            read_joints,
             last_volts: [0.0; NUM_JOINTS],
             last_temps_c: [0.0; NUM_JOINTS],
             read_diagnostics: ReadDiagnostics::default(),
@@ -525,7 +541,7 @@ impl FeetechIo {
     pub fn present_positions(&mut self) -> Result<[f64; NUM_JOINTS]> {
         let blocks = self
             .controller
-            .sync_read_raw_data(&self.ids, reg::PRESENT_POSITION, 2)
+            .sync_read_raw_data(&self.read_ids, reg::PRESENT_POSITION, 2)
             .map_err(|e| IoError::Bus(format!("read present positions: {e}")))?;
         if blocks.len() != NUM_JOINTS {
             return Err(IoError::ShortRead {
@@ -535,7 +551,7 @@ impl FeetechIo {
             });
         }
         let mut out = [0.0; NUM_JOINTS];
-        for (joint, block) in blocks.iter().enumerate() {
+        for (&joint, block) in self.read_joints.iter().zip(&blocks) {
             if block.len() != 2 {
                 return Err(IoError::ShortRead {
                     what: "present position block",
@@ -608,10 +624,10 @@ impl RobotIo for FeetechIo {
         let blocks =
             match self
                 .controller
-                .sync_read_raw_data(&self.ids, TICK_READ_ADDR, TICK_READ_LEN)
+                .sync_read_raw_data(&self.read_ids, TICK_READ_ADDR, TICK_READ_LEN)
             {
                 Ok(blocks) => {
-                    self.read_diagnostics = ReadDiagnostics::default();
+                    self.read_diagnostics.recovered();
                     blocks
                 }
                 Err(error) => {
@@ -646,7 +662,7 @@ impl RobotIo for FeetechIo {
         let mut sensors = Sensors::default();
         let mut input_current_a = 0.0;
         let mut input_current_abs_a = 0.0;
-        for (joint, block) in blocks.iter().enumerate() {
+        for (&joint, block) in self.read_joints.iter().zip(&blocks) {
             if block.len() != TICK_READ_LEN as usize {
                 return Err(IoError::ShortRead {
                     what: "hls motor block",
@@ -690,7 +706,7 @@ impl RobotIo for FeetechIo {
             })
             .collect::<Result<_>>()?;
         self.controller
-            .sync_write_raw_data(&self.ids, reg::ACCEL, &data)
+            .sync_write_raw_data(&JOINT_IDS, reg::ACCEL, &data)
             .map_err(|e| IoError::Bus(format!("sync_write WritePosEx: {e}")))
     }
 
@@ -765,6 +781,44 @@ impl RobotIo for FeetechIo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sorted_feedback_maps_to_every_original_joint_including_the_mouth() {
+        let (read_ids, read_joints) = sync_read_layout();
+        assert_eq!(
+            read_ids,
+            [10, 11, 12, 13, 14, 20, 21, 22, 23, 24, 30, 31, 32, 33, 34]
+        );
+        let mut feedback = [0; NUM_JOINTS];
+        for (&joint, &id) in read_joints.iter().zip(&read_ids) {
+            feedback[joint] = id;
+        }
+        assert_eq!(feedback, JOINT_IDS);
+        assert_eq!(feedback[crate::model::MOUTH_INDEX], 34);
+    }
+
+    #[test]
+    fn intermittent_read_errors_probe_every_joint_and_clear_recovered_faults() {
+        let mut diagnostics = ReadDiagnostics::default();
+        let mut probed = Vec::new();
+        for &id in JOINT_IDS.iter().chain(JOINT_IDS.iter()) {
+            let detail = diagnostics.diagnose(|joint_id| {
+                probed.push(joint_id);
+                if joint_id == 12 {
+                    Err(IoError::Bus("checksum mismatch".into()))
+                } else {
+                    Ok(())
+                }
+            });
+            if id == 12 {
+                assert!(detail.contains("servo 12 (right_hip_pitch):"));
+            } else {
+                assert!(detail.contains("no failed servo identified yet"));
+            }
+            diagnostics.recovered();
+        }
+        assert_eq!(probed, JOINT_IDS.repeat(2));
+    }
 
     #[test]
     fn failed_reads_probe_one_joint_at_a_time_and_name_each_failure() {
