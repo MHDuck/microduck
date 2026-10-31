@@ -82,6 +82,8 @@ fn permits(call: &proto::Call) -> bool {
         // Answered by `btd` itself rather than forwarded. Permitted because it is the one call a
         // session must be able to make before it has made any other.
         SystemAuthenticate(_) => true,
+        // Voice may issue movement commands; use the visible WebRTC control surface.
+        RobotSpeech(_) | RobotVision(_) => false,
 
         // ── the update subset §4.1 names ────────────────────────────────────
         //

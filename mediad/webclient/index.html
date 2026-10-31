@@ -224,6 +224,19 @@
   </section>
 
   <section>
+    <h2>语音与视觉</h2>
+    <div class="row">
+      <button id="speech-switch" disabled>开启语音识别</button>
+      <span id="speech-status" role="status" aria-live="polite">连接后读取状态</span>
+    </div>
+    <p class="hint">使用机器人麦克风识别“前进、后退、停止、坐下、起来”。开启语音不会自动起身；先完成起身，再说口令。手动操作优先。</p>
+    <div class="row">
+      <button id="vision-switch" disabled>开启视觉识别</button>
+      <span id="vision-status" role="status" aria-live="polite">预留功能，暂不可用</span>
+    </div>
+  </section>
+
+  <section>
     <h2>telemetry</h2>
     <table>
       <tr><th>mode</th><td id="t-mode">–</td></tr>
@@ -607,6 +620,7 @@ function startTelemetry() {
 }
 
 function stopTelemetry() {
+  resetFeatures();
   if (standUpPending) finishStandUp("连接已断开，无法确认起身结果；重新连接后检查状态。", true);
   clearInterval(healthTimer); healthTimer = null;
   clearInterval(statsTimer); statsTimer = null;
@@ -624,6 +638,7 @@ function stopTelemetry() {
 // gets named — a hot servo, a flat pack, a bus that stopped answering.
 async function poll() {
   if (!open()) return;
+  pollFeatures();
   try {
     const mode = await call("robot.mode", {}, true);
     $("t-mode").textContent = mode.mode || "–";
@@ -938,6 +953,69 @@ setInterval(async () => {
     $("gaze").hidden = !result.clamped;
   } catch { /* logged by `call` */ }
 }, 1000 / INTENT_HZ);
+
+// ── microphone / reserved vision switches ─────────────────────────────────────
+
+const features = {
+  speech: { label: "语音识别", value: null, busy: false, version: 0 },
+  vision: { label: "视觉识别", value: null, busy: false, version: 0 },
+};
+
+function renderFeature(name, error = "") {
+  const feature = features[name], value = feature.value;
+  const button = $(`${name}-switch`);
+  button.textContent = feature.busy ? "处理中……" : `${value?.enabled ? "关闭" : "开启"}${feature.label}`;
+  button.disabled = !open() || feature.busy || !value || !(value.available || value.enabled);
+  const states = { off: "已关闭", starting: "启动中", on: "已开启", error: "启动失败", reserved: "预留功能" };
+  $(`${name}-status`).textContent = error || (value
+    ? `${states[value.state] || "状态未知"}：${value.reason || ""}` : "连接后读取状态");
+}
+
+function resetFeatures() {
+  for (const [name, feature] of Object.entries(features)) {
+    feature.version++;
+    feature.value = null;
+    feature.busy = false;
+    renderFeature(name, "连接已断开");
+  }
+}
+
+async function pollFeatures() {
+  await Promise.all(Object.entries(features).map(async ([name, feature]) => {
+    if (feature.busy) return;
+    const version = ++feature.version;
+    try {
+      const value = await call(`robot.${name}`, {}, true);
+      if (version !== feature.version) return;
+      feature.value = value;
+      renderFeature(name);
+    } catch (error) {
+      if (version === feature.version) renderFeature(name, `无法读取状态：${error.message || error}`);
+    }
+  }));
+}
+
+async function setFeature(name) {
+  const feature = features[name];
+  if (!open() || feature.busy || !feature.value || !(feature.value.available || feature.value.enabled)) return;
+  feature.busy = true;
+  const version = ++feature.version;
+  const enabled = !feature.value.enabled;
+  renderFeature(name);
+  try {
+    const value = await call(`robot.${name}`, { enabled });
+    if (version !== feature.version) return;
+    feature.value = value;
+    feature.busy = false;
+    renderFeature(name);
+  } catch (error) {
+    if (version !== feature.version) return;
+    feature.busy = false;
+    renderFeature(name, `操作失败：${error.message || error}`);
+  }
+}
+
+for (const name of Object.keys(features)) $(`${name}-switch`).onclick = () => setFeature(name);
 
 // ── posture, skills, sounds ────────────────────────────────────────────────────
 

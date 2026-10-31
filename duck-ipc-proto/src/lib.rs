@@ -174,7 +174,10 @@ pub const JSONRPC_VERSION: &str = "2.0";
 ///
 /// `SoundTag::Laugh` adds the five-second laugh generated in the per-robot voice bank. Additive,
 /// and bumped because the version records that peers were built from different releases.
-pub const API_VERSION: u32 = 18;
+///
+/// # v19 — runtime microphone control and reserved vision switch
+/// `robot.speech` queries or changes keyword control; `robot.vision` reports its reserved status.
+pub const API_VERSION: u32 = 19;
 
 /// The longest an update may legitimately go quiet, in seconds — the pre-install hook's ceiling.
 ///
@@ -328,6 +331,8 @@ pub mod method {
     pub const ROBOT_STOP: &str = "robot.stop";
     /// Turn policy execution on or off.
     pub const ROBOT_ENABLE: &str = "robot.enable";
+    pub const ROBOT_SPEECH: &str = "robot.speech";
+    pub const ROBOT_VISION: &str = "robot.vision";
 
     // ── power to the joints ──────────────────────────────────────────────────
     //
@@ -627,6 +632,10 @@ pub enum Call {
     RobotLook(LookParams),
     RobotStop,
     RobotEnable(EnableParams),
+    /// Query or enable microphone keyword control. Off after every daemon restart.
+    RobotSpeech(FeatureParams),
+    /// Reserved recognition control; currently reports unavailable.
+    RobotVision(FeatureParams),
     /// Power the joints and ramp to the home pose. No policy needed.
     RobotInit,
     /// Cut power to the joints. The robot collapses if nothing holds it.
@@ -769,6 +778,8 @@ impl Call {
             Call::RobotLook(_) => method::ROBOT_LOOK,
             Call::RobotStop => method::ROBOT_STOP,
             Call::RobotEnable(_) => method::ROBOT_ENABLE,
+            Call::RobotSpeech(_) => method::ROBOT_SPEECH,
+            Call::RobotVision(_) => method::ROBOT_VISION,
             Call::RobotInit => method::ROBOT_INIT,
             Call::RobotRelax => method::ROBOT_RELAX,
             Call::RobotDo(_) => method::ROBOT_DO,
@@ -890,6 +901,8 @@ impl Call {
             | Call::RobotLook(_)
             | Call::RobotStop
             | Call::RobotEnable(_)
+            | Call::RobotSpeech(_)
+            | Call::RobotVision(_)
             | Call::RobotInit
             | Call::RobotRelax
             | Call::RobotDo(_)
@@ -980,6 +993,7 @@ impl Call {
             Call::RobotHead(p) => encode(p),
             Call::RobotLook(p) => encode(p),
             Call::RobotEnable(p) => encode(p),
+            Call::RobotSpeech(p) | Call::RobotVision(p) => encode(p),
             Call::RobotDo(p) => encode(p),
             Call::RobotPose(p) => encode(p),
             Call::RobotMouth(p) => encode(p),
@@ -1054,6 +1068,8 @@ impl Call {
             method::ROBOT_LOOK => Call::RobotLook(decode(params)?),
             method::ROBOT_STOP => Call::RobotStop,
             method::ROBOT_ENABLE => Call::RobotEnable(decode(params)?),
+            method::ROBOT_SPEECH => Call::RobotSpeech(decode(params)?),
+            method::ROBOT_VISION => Call::RobotVision(decode(params)?),
             method::ROBOT_INIT => Call::RobotInit,
             method::ROBOT_RELAX => Call::RobotRelax,
             method::ROBOT_DO => Call::RobotDo(decode(params)?),
@@ -1189,6 +1205,10 @@ pub mod test_support {
                 ignore_protection: false,
             }),
             Call::RobotInit,
+            Call::RobotSpeech(FeatureParams {
+                enabled: Some(false),
+            }),
+            Call::RobotVision(FeatureParams::default()),
             Call::RobotRelax,
             Call::RobotDo(DoParams {
                 skill: Skill::GroundPick,
@@ -1849,6 +1869,24 @@ pub struct EnableParams {
     pub ignore_protection: bool,
 }
 
+/// Omit `enabled` to query. Explicit booleans make retries idempotent.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FeatureParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeatureResult {
+    pub accepted: bool,
+    pub available: bool,
+    pub enabled: bool,
+    /// `off`, `starting`, `on`, `error`, or `reserved`.
+    pub state: String,
+    pub reason: String,
+}
+
 /// What an apply should move to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2370,6 +2408,11 @@ pub struct SafeToRestartResult {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct HealthResult {
     pub healthy: bool,
+    /// All joints, including the beak, have successfully been commanded torque-off.
+    /// False includes unknown state, a stale loop, and failed bus operations. Older
+    /// daemons omit this field, so clients must require explicit `true` before replacing models.
+    #[serde(default)]
+    pub torque_off: bool,
     /// Set when the reason is a property of the *board*, not of the running release.
     ///
     /// The whole point of the health gate is to answer "did this release break the robot?".
@@ -3796,6 +3839,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn feature_switches_query_without_mutation_and_require_boolean_values() {
+        assert_eq!(
+            serde_json::from_str::<FeatureParams>("{}").unwrap().enabled,
+            None
+        );
+        assert!(serde_json::from_str::<FeatureParams>(r#"{"enabled":"true"}"#).is_err());
+        assert!(
+            serde_json::from_str::<FeatureParams>(r#"{"enabled":true,"command":"anything"}"#)
+                .is_err()
+        );
+        for call in [
+            Call::RobotSpeech(FeatureParams {
+                enabled: Some(true),
+            }),
+            Call::RobotVision(FeatureParams {
+                enabled: Some(false),
+            }),
+        ] {
+            let request = Request::call(Id::Number(42), &call);
+            assert_eq!(request.as_call().unwrap(), call);
+            assert_eq!(call.destination(), Some((Service::Robot, Lane::Prompt)));
+        }
+    }
+
+    #[test]
     fn old_enable_requests_do_not_ignore_protection() {
         for json in [r#"{"on":true}"#, r#"{"on":true,"stand_up":true}"#] {
             let params: EnableParams = serde_json::from_str(json).unwrap();
@@ -3946,7 +4014,7 @@ mod tests {
     fn every_call_covers_every_variant() {
         assert_eq!(
             every_call().len(),
-            46,
+            48,
             "a Call variant was added or removed — update every_call() and this count"
         );
     }
@@ -4627,6 +4695,18 @@ mod tests {
         let answer: HealthResult =
             serde_json::from_str(r#"{"healthy":false,"reason":"motors not responding"}"#).unwrap();
         assert!(!answer.degraded);
+        assert!(!answer.torque_off);
+    }
+
+    #[test]
+    fn health_reports_confirmed_torque_off_explicitly() {
+        let answer = HealthResult {
+            torque_off: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&answer).unwrap();
+        assert!(json.contains(r#""torque_off":true"#));
+        assert_eq!(serde_json::from_str::<HealthResult>(&json).unwrap(), answer);
     }
 
     /// And it is absent from the wire when false, so the common answers stay small.

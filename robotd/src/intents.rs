@@ -133,6 +133,7 @@ pub struct Intents {
     mouth_generation: AtomicU64,
     /// Whether the policy should drive. Discrete, so a plain flag rather than a slot.
     enabled: AtomicBool,
+    manual_generation: AtomicU64,
     /// A pending `robot.init` / `robot.relax`, as [`PowerRequest`].
     ///
     /// A request rather than a flag, and taken rather than read: powering the joints is an *edge*,
@@ -233,6 +234,7 @@ impl Intents {
             mouth_at_us: AtomicU64::new(0),
             mouth_generation: AtomicU64::new(0),
             enabled: AtomicBool::new(false),
+            manual_generation: AtomicU64::new(0),
             power: AtomicU8::new(POWER_NONE),
             theremin: AtomicU8::new(THEREMIN_NONE),
             chorale: AtomicU8::new(THEREMIN_NONE),
@@ -251,6 +253,14 @@ impl Intents {
 
     fn now_us(&self) -> u64 {
         self.epoch.elapsed().as_micros() as u64
+    }
+
+    pub fn manual_input(&self) {
+        self.manual_generation.fetch_add(1, Ordering::Release);
+    }
+
+    pub fn manual_generation(&self) -> u64 {
+        self.manual_generation.load(Ordering::Acquire)
     }
 
     pub fn set_twist(&self, twist: [f64; 3]) {

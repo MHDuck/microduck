@@ -7,7 +7,7 @@
 //!
 //! ## What it does not do
 //!
-//! **It never parses a reply.** Requests are read far enough to route them and no further;
+//! **Ordinary routed replies are not parsed.** Requests are read far enough to route them;
 //! everything a service emits is forwarded verbatim. Two things follow, and both matter:
 //!
 //! - A subscription works with no special case. It is a stream of notifications on an open
@@ -16,12 +16,19 @@
 //! - Adding a method to the API costs nothing here. `duck-ipc-proto` stays the only place a method
 //!   is defined, and this file does not grow a case for it.
 //!
-//! **It does not authenticate.** `remote-webrtc.md` §4: there is no gate on the robot. A LAN peer
+//! The local `app.control` extension is a bounded request/reply bridge to the phone app's
+//! arbiter. That service authenticates its token and returns one response with the same id.
+//!
+//! **Ordinary routes do not authenticate.** `remote-webrtc.md` §4: there is no gate on the robot. A LAN peer
 //! may drive it, and a bridged peer authenticated to the rendezvous service — on both sides —
 //! before arriving. `route::permits` refuses `system.authenticate` by name rather than answering
 //! it, so a client that asks gets a clear no instead of a lie.
 
 use duck_ipc_proto as proto;
+use std::path::Path;
+use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 
 use crate::route::{self, Route};
@@ -50,6 +57,10 @@ pub struct Video {
 
 /// The method a peer asks with. Answered here rather than routed: no service owns it.
 const VIDEO_METHOD: &str = "media.video";
+const APP_CONTROL_METHOD: &str = "app.control";
+const APP_CONTROL_SOCKET: &str = "/run/duck-app/control.sock";
+const MAX_LINE: usize = 64 * 1024;
+const APP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// What the video is, told to a peer once when its channel opens.
 ///
@@ -93,9 +104,23 @@ pub async fn run(
     tracing::debug!("control channel ended");
 }
 
-/// Route one line. Returns a reply to send back only when this transport answers it itself —
-/// which is to say, only when it refuses.
+/// Route one line, or return the reply for a session-local method or refusal.
 async fn handle(line: &str, pool: &mut Pool, video: Video) -> Option<String> {
+    handle_with_app_socket(line, pool, video, Path::new(APP_CONTROL_SOCKET)).await
+}
+
+async fn handle_with_app_socket(
+    line: &str,
+    pool: &mut Pool,
+    video: Video,
+    app_socket: &Path,
+) -> Option<String> {
+    if line.len() > MAX_LINE {
+        return Some(error_line(
+            None,
+            proto::Error::new(proto::code::INVALID_REQUEST, "control frame exceeds 64 KiB"),
+        ));
+    }
     let request: proto::Request = match serde_json::from_str(line) {
         Ok(request) => request,
         Err(e) => {
@@ -113,6 +138,54 @@ async fn handle(line: &str, pool: &mut Pool, video: Video) -> Option<String> {
     // serialises that as `null` — which is right: a refusal to a notification is still worth
     // sending, because silence would look like acceptance.
     let id = request.id.clone();
+
+    if request.method == APP_CONTROL_METHOD {
+        let params = request.params.as_ref();
+        if request.jsonrpc != "2.0" || line.contains(['\n', '\r']) {
+            return Some(error_line(
+                id,
+                proto::Error::new(
+                    proto::code::INVALID_REQUEST,
+                    "app.control requires one JSON-RPC 2.0 line",
+                ),
+            ));
+        }
+        if !params
+            .and_then(|p| p.get("token"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|token| !token.is_empty() && token.len() <= 512)
+            || !params
+                .and_then(|p| p.get("command"))
+                .is_some_and(serde_json::Value::is_object)
+        {
+            return Some(error_line(
+                id,
+                proto::Error::new(
+                    proto::code::INVALID_PARAMS,
+                    "app.control requires token and command",
+                ),
+            ));
+        }
+        let reply =
+            tokio::time::timeout(APP_TIMEOUT, app_control_reply(app_socket, line, &id)).await;
+        return Some(match reply {
+            Ok(Ok(reply)) => reply,
+            Ok(Err(_)) => error_line(
+                id,
+                proto::Error::new(
+                    proto::code::INTERNAL_ERROR,
+                    "duck-app control service is unavailable or returned an invalid reply",
+                ),
+            ),
+            Err(_) => error_line(
+                id,
+                proto::Error::new(
+                    proto::code::INTERNAL_ERROR,
+                    "duck-app control service timed out",
+                ),
+            ),
+        });
+    }
 
     // Answered here, before anything tries to make a `Call` of it: this is `mediad`'s own question
     // about `mediad`'s own pipeline, and there is no service to route it to.
@@ -165,6 +238,36 @@ async fn handle(line: &str, pool: &mut Pool, video: Video) -> Option<String> {
             }
         }
     }
+}
+
+async fn app_control_reply(
+    socket: &Path,
+    line: &str,
+    id: &Option<proto::Id>,
+) -> std::io::Result<String> {
+    let mut stream = UnixStream::connect(socket).await?;
+    stream.write_all(line.as_bytes()).await?;
+    stream.write_all(b"\n").await?;
+    stream.flush().await?;
+    // Bound the reader itself; checking length after an unlimited read would still allocate it.
+    let mut reader = BufReader::new(stream.take((MAX_LINE + 2) as u64));
+    let mut bytes = Vec::new();
+    reader.read_until(b'\n', &mut bytes).await?;
+    let invalid =
+        || std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid app.control reply");
+    if bytes.len() > MAX_LINE + 1 || bytes.last() != Some(&b'\n') {
+        return Err(invalid());
+    }
+    let reply = String::from_utf8(bytes).map_err(|_| invalid())?;
+    let value: serde_json::Value = serde_json::from_str(&reply).map_err(|_| invalid())?;
+    let response: proto::Response = serde_json::from_value(value.clone()).map_err(|_| invalid())?;
+    if response.jsonrpc != "2.0"
+        || &response.id != id
+        || value.get("result").is_some() == value.get("error").is_some()
+    {
+        return Err(invalid());
+    }
+    Ok(reply.trim_end().to_owned())
 }
 
 /// One refusal, as a line. Built through [`proto::Response`] rather than by hand so the envelope
@@ -259,6 +362,133 @@ mod tests {
             pad: dir.join("pad.sock"),
             tof: dir.join("tof.sock"),
         }
+    }
+
+    async fn app_call(dir: &Path, line: &str) -> serde_json::Value {
+        let (tx, _rx) = mpsc::channel(8);
+        let mut pool = Pool::new(sockets_in(dir), tx);
+        let reply = handle_with_app_socket(
+            line,
+            &mut pool,
+            Video {
+                width: 1280,
+                height: 720,
+                rotate: 90,
+            },
+            &dir.join("control.sock"),
+        )
+        .await
+        .expect("session-local reply");
+        serde_json::from_str(&reply).unwrap()
+    }
+
+    const APP_REQUEST: &str = r#"{"jsonrpc":"2.0","id":"phone-7","method":"app.control","params":{"token":"test-token","command":{"kind":"manual","vx":0.1,"vy":0.0,"vyaw":0.0,"seq":7}}}"#;
+
+    #[tokio::test]
+    async fn app_control_reaches_only_the_fixed_arbiter_and_preserves_its_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let result =
+            r#"{"jsonrpc":"2.0","id":"phone-7","result":{"ok":true,"control":{"owner":"manual"}}}"#;
+        let mut app_seen = fake_daemon(dir.path(), "control.sock", vec![result.into()]);
+        let mut robot_seen = fake_daemon(dir.path(), "robotd.sock", vec![]);
+        let reply = app_call(dir.path(), APP_REQUEST).await;
+        assert_eq!(app_seen.recv().await.unwrap(), APP_REQUEST);
+        assert_eq!(
+            reply,
+            serde_json::from_str::<serde_json::Value>(result).unwrap()
+        );
+        assert!(
+            robot_seen.try_recv().is_err(),
+            "arbiter requests must never bypass arbitration"
+        );
+    }
+
+    #[tokio::test]
+    async fn app_control_forwards_authentication_errors_with_the_request_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app_seen = fake_daemon(dir.path(), "control.sock", vec![
+            r#"{"jsonrpc":"2.0","id":"phone-7","error":{"code":403,"message":"session expired"}}"#.into(),
+        ]);
+        let reply = app_call(dir.path(), APP_REQUEST).await;
+        assert_eq!(reply["id"], "phone-7");
+        assert_eq!(reply["error"]["code"], 403);
+        assert_eq!(app_seen.recv().await.unwrap(), APP_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn app_extension_cannot_select_another_method_or_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app_seen = fake_daemon(dir.path(), "control.sock", vec![]);
+        let reply = app_call(
+            dir.path(),
+            &APP_REQUEST.replace("app.control", "app.execute"),
+        )
+        .await;
+        assert_eq!(reply["error"]["code"], proto::code::METHOD_NOT_FOUND);
+        let reply = app_call(dir.path(), &APP_REQUEST.replace("\"test-token\"", "null")).await;
+        assert_eq!(reply["error"]["code"], proto::code::INVALID_PARAMS);
+        assert!(app_seen.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn app_control_rejects_oversized_and_multiline_requests_before_connecting() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut seen = fake_daemon(dir.path(), "control.sock", vec![]);
+        let large = APP_REQUEST.replace("test-token", &"x".repeat(MAX_LINE));
+        let reply = app_call(dir.path(), &large).await;
+        assert_eq!(reply["error"]["code"], proto::code::INVALID_REQUEST);
+        let reply = app_call(
+            dir.path(),
+            &APP_REQUEST.replace(",\"params\"", ",\n\"params\""),
+        )
+        .await;
+        assert_eq!(reply["error"]["code"], proto::code::INVALID_REQUEST);
+        assert!(seen.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn app_control_rejects_mismatched_ids_and_unbounded_replies() {
+        for response in [
+            r#"{"jsonrpc":"2.0","id":99,"result":{"ok":true}}"#.to_owned(),
+            "x".repeat(MAX_LINE + 1),
+            r#"{"jsonrpc":"2.0","id":"phone-7","result":{},"error":{"code":1,"message":"both"}}"#
+                .to_owned(),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let _seen = fake_daemon(dir.path(), "control.sock", vec![response]);
+            let reply = app_call(dir.path(), APP_REQUEST).await;
+            assert_eq!(reply["id"], "phone-7");
+            assert_eq!(reply["error"]["code"], proto::code::INTERNAL_ERROR);
+        }
+    }
+
+    #[tokio::test]
+    async fn app_control_unavailable_or_silent_service_returns_a_bounded_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = app_call(dir.path(), APP_REQUEST).await;
+        assert_eq!(missing["id"], "phone-7");
+        assert_eq!(missing["error"]["code"], proto::code::INTERNAL_ERROR);
+        let _seen = fake_daemon(dir.path(), "control.sock", vec![]);
+        let timeout = app_call(dir.path(), APP_REQUEST).await;
+        assert_eq!(
+            timeout["error"]["message"],
+            "duck-app control service timed out"
+        );
+    }
+
+    #[tokio::test]
+    async fn video_only_requests_contact_neither_robot_nor_app_service() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut robot_seen = fake_daemon(dir.path(), "robotd.sock", vec![]);
+        let mut app_seen = fake_daemon(dir.path(), "control.sock", vec![]);
+        let reply = app_call(
+            dir.path(),
+            r#"{"jsonrpc":"2.0","id":1,"method":"media.video"}"#,
+        )
+        .await;
+        assert_eq!(reply["result"]["rotate"], 90);
+        assert!(robot_seen.try_recv().is_err());
+        assert!(app_seen.try_recv().is_err());
     }
 
     /// A permitted call reaches the service that owns it, and its reply comes back.

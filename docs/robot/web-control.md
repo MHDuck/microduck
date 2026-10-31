@@ -87,7 +87,40 @@
 最大输入速度为 0.3 m/s，转速为 1.5 rad/s。持续运动指令以 10 Hz 发送；默认 500 ms 收不到新运动指令时，机器人会将速度归零。这个机制不会切断舵机电源。
 在输入框内输入文本时，方向键盘控制不会接管按键。
 
-## 5. 查看状态、日志和故障
+## 5. 语音识别开关和视觉预留
+
+连接后，在“语音与视觉”区域点击 **开启语音识别**。这是机器人上的麦克风，浏览器无需申请麦克风权限。
+状态由机器人返回，依次显示“启动中”“已开启”；启动失败会显示原因。点击 **关闭语音识别** 会结束识别、录音进程，并取消仍由语音控制的运动。
+
+- 单独开启语音不会使能电机或起身。先手动完成 StandUp，再说“前进、后退、停止、坐下、起来”。
+- 前进 / 后退为 ±0.10 m/s，最多持续 3 秒；起步、换向和坐下仍需满足原有的零速等待与姿态检查。
+- 网页、手柄或键盘的手动运动／姿态指令优先，接管后不会被旧语音请求覆盖。
+- 识别进程退出、音频心跳中断或机器人状态过期后，不继续执行语音运动。
+- robotd 重启后默认关闭语音；刷新网页、换浏览器或断开网页不会改变已经设置的语音开关，重新连接可读取当前状态。
+- 不要同时运行键盘 `--speech on`：它与网页后台会争用同一个麦克风。H 行走发声和声音播放不是这个开关控制的功能。
+
+环境仍使用 `/home/radxa/microduck-speech/current`；未安装时按钮显示不可用，需要按 [语音部署说明](../../speech/README.md) 安装。
+适配器编译进 robotd，不需要启动键盘程序，也不新增常驻 systemd 服务。
+
+### 机器人端协议
+
+```json
+{"jsonrpc":"2.0","id":401,"method":"robot.speech","params":{}}
+{"jsonrpc":"2.0","id":402,"method":"robot.speech","params":{"enabled":true}}
+{"jsonrpc":"2.0","id":403,"method":"robot.speech","params":{"enabled":false}}
+{"jsonrpc":"2.0","id":404,"method":"robot.vision","params":{}}
+```
+
+`{}` 只查询；`enabled` 必须是布尔值。回复字段为 `accepted`、`available`、`enabled`、`state`、`reason`。
+`state` 为 `off / starting / on / error / reserved`；开启请求被受理后，需继续查询直到 `on`，不能把 `starting` 当作已经录音就绪。
+重复设置同一开关状态不会重复启动进程。
+
+**视觉识别目前仅预留。** 网页按钮禁用并显示预留状态；机器人端 `robot.vision` 查询返回 `available=false`、`enabled=false`、`state=reserved`，请求开启返回 `accepted=false`。关闭请求可成功保持关闭。
+该预留接口尚未控制 mediad 原有的鸭子检测管线，也不会让摄像头联动电机。
+
+两个方法由 robotd 提供，可通过网页 WebRTC 或本机 Unix socket 调用；BLE 暂不开放。新版协议为 API v19，需同步更新 robotd 和 mediad。
+
+## 6. 查看状态、日志和故障
 
 展开网页底部 **CONSOLE**，可以看到请求、拒绝原因和连接日志。常用只读请求：
 
@@ -128,7 +161,7 @@ readlink -f /opt/robot/daemon/current
 只显示旧的 enable / init 文案时，先 Ctrl+F5；仍旧则检查是否部署了新 mediad。
 网页 HTML 编译进 mediad，单独修改板上的 HTML 文件不会更新服务提供的页面。
 
-## 6. WebSocket client 与协议
+## 7. WebSocket client 与协议
 
 `mediad/webclient/index.html` 就是仓库内可直接使用的客户端。
 8443 端口上的 WebSocket 只用于信令，不能把上面的 `robot.enable` JSON 直接发给它控制机器人。
@@ -148,7 +181,7 @@ readlink -f /opt/robot/daemon/current
 
 更多传输细节见 [WebRTC 协议设计](../design/remote-webrtc.md)。
 
-## 7. 蓝牙名称和 Wi-Fi
+## 8. 蓝牙名称和 Wi-Fi
 
 协议支持修改机器人名称，网页 WebRTC 路由也允许 `system.setName`。例如在 raw 输入框发送：
 
@@ -163,7 +196,7 @@ readlink -f /opt/robot/daemon/current
 网页底部的 `net.connect (refused)` 是验证拒绝行为的调试按钮，**不是可用的网页配网入口**。
 当前 WebRTC 允许 `net.status` / `net.scan` 查询，但拒绝 `net.connect` / `net.forget` 修改；Wi-Fi 配置应通过 BLE 客户端或机器人本机工具进行。
 
-## 8. 编译和验证
+## 9. 编译和验证
 
 本次参数贯穿 mediad 与 robotd，两个程序必须一同更新。交叉编译：
 
@@ -183,7 +216,15 @@ python -m unittest scripts.test_web_console -v
 浏览器测试需要 Playwright；`WEB_TEST_BROWSER` 可指定本机 Edge 路径。测试中的 RPC 全部被替换，网络请求被拦截，不会触碰真实机器人。
 新增 Rust 测试覆盖旧客户端默认不开启豁免、参数组合校验、请求不会继承豁免、原有过流锁定解除、恢复结束后重新检测电流和倒地、超时锁定保留，以及关节目标检查不受影响。
 
-### 本次验证记录
+### 语音／视觉开关验证记录
+
+- 网页回归 12 项通过，包括明确发送开启／关闭值、预留视觉不可开启、语音错误状态和断线后的迟到回复。
+- Linux 下语音输入与适配测试 29 项通过；机器人语音后台 5 项专项测试通过，涵盖进程启停、录音子进程退出、不使能电机、旧请求失效等。
+- 整个 Rust 工作区 `cargo check --workspace --offline --locked` 通过。工作区协议／BLE／媒体测试通过；robotd 完整测试仍有下节列出的 5 项原有失败。
+- robotd 和 mediad 的 aarch64 程序已编译，保存在仓库 `tmp/feature-switch-release/`，SHA-256 记录在同目录 `manifest.json`。此构建仅叠加本次开关功能，不含工作区其他未提交的舵机和 App 管理改动。
+- 当前电脑到 `172.20.10.5` 的 SSH 超时，尚未部署本次开关功能，也未验证真实麦克风或口令动作。
+
+### StandUp 验证与部署记录（语音开关改动之前）
 
 - 浏览器回归：8 项通过。
 - duck-control：93 项通过；duck-ipc-proto：51 项通过；mediad：42 项通过；padd：6 项通过。

@@ -26,7 +26,9 @@ mod intents;
 mod params;
 mod soc;
 mod sound;
+mod speech;
 mod theremin;
+mod torque;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -417,6 +419,7 @@ struct RobotState {
     /// accepting it into silence. Read once at startup, like the policies: the postinstall
     /// renders the bank and restarts robotd, so a bank cannot appear under a running one.
     has_voice: bool,
+    speech: speech::Speech,
     /// Whether a theremin can be picked up: the params allow one, and the depth stream is
     /// actually delivering frames. Published by the loop rather than read once at startup,
     /// because unlike a voice bank the sensor comes and goes — `tofd` restarts, the ToF
@@ -443,6 +446,8 @@ struct RobotState {
     /// client can act on neither: the answer to both is "wait, or press Start". The journal
     /// distinguishes them.
     homed: AtomicBool,
+    /// Published at the IO boundary, before any torque-on operation can reach hardware.
+    torque_off: Arc<AtomicBool>,
 
     period_us: u64,
     min_achieved_hz: f64,
@@ -477,6 +482,7 @@ impl RobotState {
             bus_error: ArcSwapOption::empty(),
             policies: ArcSwap::from_pointee(PolicyNames::of(&params.resolved_policy())),
             has_voice: params.audio.enabled && has_any_wav(&params.audio.bank),
+            speech: speech::Speech::new(PathBuf::from("/home/radxa/microduck-speech/current")),
             theremin_ready: AtomicBool::new(false),
             chorale_accepted: params.chorale.accept,
             mode: AtomicU8::new(mode_code(params.policy.mode)),
@@ -484,6 +490,7 @@ impl RobotState {
             protection_latched: AtomicBool::new(false),
             moving: AtomicBool::new(false),
             homed: AtomicBool::new(false),
+            torque_off: Arc::new(AtomicBool::new(false)),
             period_us: params.period().as_micros() as u64,
             min_achieved_hz: params.update_gate.min_achieved_hz,
             stall_periods: params.update_gate.stall_periods,
@@ -504,6 +511,12 @@ impl RobotState {
         let describe =
             |healthy: bool, degraded: bool, reason: Option<String>| proto::HealthResult {
                 healthy,
+                torque_off: self.torque_off.load(Ordering::SeqCst)
+                    && self.ticks.load(Ordering::Relaxed) > 0
+                    && self.consecutive_errors.load(Ordering::Relaxed) == 0
+                    && (self.started.elapsed().as_micros() as u64)
+                        .saturating_sub(self.last_tick_us.load(Ordering::Relaxed))
+                        <= self.period_us.saturating_mul(self.stall_periods as u64),
                 degraded,
                 reason,
                 battery: self.battery(),
@@ -736,6 +749,7 @@ async fn main() -> ExitCode {
         }
     };
 
+    let speech_task = tokio::spawn(speech::run(Arc::clone(&state), Arc::clone(&intents)));
     let serving = serve(
         Arc::clone(&state),
         Arc::clone(&intents),
@@ -755,6 +769,9 @@ async fn main() -> ExitCode {
     // Ask the loop to stop and let it finish the tick it is in, rather than aborting
     // mid-transaction and leaving a half-written packet on the bus.
     state.shutdown.store(true, Ordering::Relaxed);
+    state.speech.request(Some(false));
+    speech_task.abort();
+    let _ = speech_task.await;
     let _ = control.join();
     let _ = std::fs::remove_file(&args.socket);
     code
@@ -1474,7 +1491,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
     // per-mode defaults have been applied.
     let mut policy_cfg = params.resolved_policy();
     let mut safety = Safety::new(
-        io,
+        torque::ReportedIo::new(io, Arc::clone(&state.torque_off)),
         imu,
         SafetyConfig {
             fall_protection: params.safety.fall_protection,
@@ -1622,6 +1639,7 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
     let mut stand_up_automatic = false;
     let mut stand_up_log_at = Instant::now();
     let mut stand_up_failed = false;
+    let mut last_speech_sequence = 0;
     let mut auto_recovery_attempted = false;
 
     // The voice, and the ear. Both optional equipment: a robot without a codec or a bank
@@ -1969,6 +1987,52 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
             twist_ema = [0.0; 3];
         }
         let mut snapshot = intents.snapshot();
+        if let Some(update) = state.speech.current(intents.manual_generation()) {
+            let can_drive = snapshot.enabled
+                && bringup == Bringup::Ready
+                && stand_up_until.is_none()
+                && shutdown_sit.is_none()
+                && mode_change.is_none()
+                && policy_cfg.mode == Mode::Walk
+                && !snapshot.pose.active
+                && safety.protection().is_none()
+                && !safety.fallen()
+                && safety.imu_ready()
+                && imu_read_errors == 0
+                && fresh.is_some();
+            if can_drive && let Some(direction) = update.packet.drive {
+                snapshot.command.twist = [
+                    match direction {
+                        speech::Drive::Walk => 0.1,
+                        speech::Drive::Backward => -0.1,
+                    },
+                    0.0,
+                    0.0,
+                ];
+                snapshot.twist_age = Duration::ZERO;
+            }
+            if update.sequence != last_speech_sequence {
+                last_speech_sequence = update.sequence;
+                match update.packet.action {
+                    Some(speech::Action::Stop | speech::Action::StopForSit) => {
+                        intents.stop();
+                        snapshot.command.twist = [0.0; 3];
+                        snapshot.twist_age = Duration::ZERO;
+                    }
+                    Some(action @ (speech::Action::Sit | speech::Action::Rise)) if can_drive => {
+                        if let Some(controller) = controller.as_mut()
+                            && controller.is_sitting() == (action == speech::Action::Rise)
+                        {
+                            match controller.sit_toggle() {
+                                Ok(_) => auto_recovery_attempted = false,
+                                Err(reason) => tracing::warn!(reason, "speech sit/rise refused"),
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         if stand_up_until.is_some() {
             snapshot.command = PolicyCommand::default();
             snapshot.pose.active = false;
@@ -3345,6 +3409,15 @@ async fn handle(
 /// client that sends `robot.move` with an `id` is not silently ignored — the spec permits
 /// either, and refusing one because of a framing choice would be a surprise.
 fn apply_intent(intents: &Intents, call: &proto::Call) -> bool {
+    if matches!(
+        call,
+        proto::Call::RobotMove(_)
+            | proto::Call::RobotHead(_)
+            | proto::Call::RobotPose(_)
+            | proto::Call::RobotMouth(_)
+    ) {
+        intents.manual_input();
+    }
     match call {
         proto::Call::RobotMove(p) => {
             intents.set_twist([p.vx, p.vy, p.vyaw]);
@@ -3394,7 +3467,24 @@ fn dispatch(
     id: proto::Id,
     call: &proto::Call,
 ) -> proto::Response {
+    if matches!(
+        call,
+        proto::Call::RobotStop
+            | proto::Call::RobotEnable(_)
+            | proto::Call::RobotInit
+            | proto::Call::RobotRelax
+            | proto::Call::RobotDo(_)
+            | proto::Call::RobotLook(_)
+            | proto::Call::RobotShutdown
+            | proto::Call::RobotSetMode(_)
+    ) {
+        intents.manual_input();
+    }
     match call {
+        proto::Call::RobotSpeech(p) => {
+            proto::Response::ok(Some(id), &state.speech.request(p.enabled))
+        }
+        proto::Call::RobotVision(p) => proto::Response::ok(Some(id), &speech::vision(p.enabled)),
         proto::Call::RobotMove(_)
         | proto::Call::RobotHead(_)
         | proto::Call::RobotPose(_)
@@ -3913,6 +4003,34 @@ mod tests {
     }
 
     #[test]
+    fn manual_commands_invalidate_voice_but_feature_queries_do_not() {
+        let s = state();
+        let intents = Intents::new();
+        assert_eq!(intents.manual_generation(), 0);
+        apply_intent(
+            &intents,
+            &proto::Call::RobotMove(proto::MoveParams {
+                vx: 0.1,
+                vy: 0.0,
+                vyaw: 0.0,
+            }),
+        );
+        assert_eq!(intents.manual_generation(), 1);
+        dispatch(&s, &intents, proto::Id::Number(1), &proto::Call::RobotStop);
+        assert_eq!(intents.manual_generation(), 2);
+        let status: proto::FeatureResult = dispatch(
+            &s,
+            &intents,
+            proto::Id::Number(2),
+            &proto::Call::RobotSpeech(proto::FeatureParams::default()),
+        )
+        .result_as()
+        .unwrap();
+        assert_eq!(intents.manual_generation(), 2);
+        assert!(!status.enabled && !intents.enabled());
+    }
+
+    #[test]
     fn protection_override_requires_an_explicit_standup() {
         for (on, toggle, stand_up) in [
             (true, false, false),
@@ -4217,6 +4335,24 @@ mod tests {
         ticked(&s, 5);
         assert_eq!(s.achieved_hz.load(Ordering::Relaxed), 0);
         assert!(s.health().healthy);
+    }
+
+    #[test]
+    fn torque_off_requires_confirmation_and_a_live_bus_loop() {
+        let mut s = state();
+        assert!(!s.health().torque_off);
+        ticked(&s, 5);
+        assert!(
+            !s.health().torque_off,
+            "fresh positions do not confirm torque"
+        );
+        s.torque_off.store(true, Ordering::SeqCst);
+        assert!(s.health().torque_off);
+        s.consecutive_errors.store(1, Ordering::Relaxed);
+        assert!(!s.health().torque_off, "a lost bus makes power unknown");
+        s.consecutive_errors.store(0, Ordering::Relaxed);
+        s.started = Instant::now() - Duration::from_secs(30);
+        assert!(!s.health().torque_off, "a stale loop cannot confirm power");
     }
 
     /// One dropped transaction is ordinary; a sustained run of them means the bus is gone,
@@ -5369,6 +5505,46 @@ mod tests {
         assert_eq!(torque, None, "the loop powered the joints on its own");
         assert_eq!(writes, 0, "torque was written {writes} times at startup");
         assert!(!s.homed.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn relax_confirmation_is_revoked_before_isolated_beak_power() {
+        let state = Arc::new(RobotState::new(&Params::default(), false, false));
+        let intents = Arc::new(Intents::new());
+        let task = tokio::spawn(control_loop(
+            FakeIo::at(DEFAULT_POSITION).frozen(),
+            FakeImu::new(),
+            Arc::clone(&state),
+            Arc::clone(&intents),
+            Params::default(),
+            Duration::from_millis(2),
+            noop_poweroff(),
+        ));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while state.ticks.load(Ordering::Relaxed) < 5 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert!(state.ticks.load(Ordering::Relaxed) >= 5);
+        assert!(!state.health().torque_off, "startup power state is unknown");
+        intents.request_relax();
+        while !state.health().torque_off && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert!(
+            state.health().torque_off,
+            "completed relax must be observable"
+        );
+        intents.set_mouth(0.6);
+        while state.health().torque_off && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert!(
+            !state.health().torque_off,
+            "powered beak also blocks model changes"
+        );
+        state.shutdown.store(true, Ordering::Relaxed);
+        task.await.unwrap();
+        assert!(!state.health().torque_off, "control thread has gone away");
     }
 
     /// A mouth notification on a limp robot is narrower than `robot.init`: it powers and

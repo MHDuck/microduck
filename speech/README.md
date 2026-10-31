@@ -1,6 +1,6 @@
 # 独立语音工程 · dzh_voice
 
-语音模型/依赖在此目录维护，运动模型仍在policies。默认不运行，不加入robotd或systemd自启动。
+语音模型/依赖在此目录维护，运动模型仍在 policies。默认不运行。网页可通过 robotd 按需启动／关闭识别，不设置语音或运动自启动。
 识别已在旧工程由用户实测；本次master适配尚需板端复验。
 
 - `prepare.py`：下载官方sherpa-onnx KWS、生成关键词及SHA清单；已有正确模型不重下载。
@@ -46,7 +46,7 @@ sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py --speech on \
 不访问麦克风，与master键盘路径一致。`--walk-voice`/H是播放大笑，与本开关无关。
 
 旧dzh的`control.py/robot_bridge.py`没有迁入：它们是独立运动控制器，不适合与新master键盘并行。
-本版本只运行一个键盘控制进程，不得另开旧语音控制器、手柄padd或浏览器动作控制抢写速度。
+键盘 `--speech on` 与网页的“开启语音识别”使用同一个麦克风，请二选一。网页模式下由 robotd 合并语音意图，手动控制会取消当前语音行走和待坐请求。
 摄像头/声音/独立嘴部已在新master，未使用旧文件覆盖。
 
 语音前进固定+0.10m/s、后退-0.10m/s，均最长3秒；换向先停止并等待至少2秒。
@@ -54,6 +54,16 @@ sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py --speech on \
 C/L/H日志和发声键不取消语音限时。语音不能使能/重启/关机/切模式或触发其它技能。
 音频心跳0.8秒/状态0.5秒过期、识别退出会停止其拥有的行走，但不干预之后接管的手动指令。
 起立、切网、自动恢复与卸力严格走master：语音不另设动作完成时长、不重试toggle。
+
+### 网页语音开关
+
+打开机器人网页、连接控制通道后，在“语音与视觉”区域点击“开启语音识别”。状态依次为“启动中”“已开启”；关闭会结束识别和录音进程。麦克风在机器人上，无需浏览器麦克风权限。
+起身仍由人操作 enable / init；单独开启语音不会启动运动模型。识别内容沿用上面的五个口令和限时规则。
+语音开关在 robotd 重启后回到关闭，网页断开不会关闭已经启用的语音。需要关闭时重新连接并点击开关。
+此开关不控制声音播放或 H 行走发声；视觉识别开关目前仅预留。
+
+机器人端接口为 `robot.speech`：`{}` 查询，`{"enabled":true}` 开启，`{"enabled":false}` 关闭。
+语音环境路径仍为 `/home/radxa/microduck-speech/current`，通过上面的 `speech/sync.sh --install` 安装。适配器编译进 robotd，部署新功能需同时更新 robotd / mediad；无需运行键盘脚本。
 默认键盘退出会卸力并停止robotd，退出前托住机器人。
 
 ### 识别成功但接键盘后看不到/动作很少（2026-10-29修复）

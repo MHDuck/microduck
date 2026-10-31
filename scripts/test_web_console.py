@@ -114,6 +114,58 @@ class StandUpButtons(unittest.IsolatedAsyncioTestCase):
         self.assertIn("连接已断开", await self.page.locator("#standup-status").text_content())
         self.assertEqual(await self.page.evaluate("window.calls.filter(c => c.method === 'robot.enable').length"), 1)
 
+    async def mock_features(self):
+        await self.page.evaluate("""() => {
+          open = () => true;
+          window.speechFeature = {accepted:true, available:true, enabled:false, state:'off', reason:'已关闭'};
+          const original = call;
+          call = async (method, params = {}) => {
+            if (method === 'robot.speech') {
+              window.calls.push({method, params});
+              if (params.enabled !== undefined) Object.assign(window.speechFeature,
+                {enabled:params.enabled, state:params.enabled ? 'starting' : 'off'});
+              return {...window.speechFeature};
+            }
+            if (method === 'robot.vision') return {accepted:true, available:false, enabled:false, state:'reserved', reason:'尚未接入'};
+            return original(method, params);
+          };
+        }""")
+        await self.page.evaluate("pollFeatures()")
+
+    async def test_speech_switch_sends_explicit_on_then_off(self):
+        await self.mock_features()
+        button = self.page.locator('#speech-switch')
+        await button.click()
+        self.assertIn('关闭', await button.text_content())
+        self.assertIn('启动中', await self.page.locator('#speech-status').text_content())
+        await button.click()
+        values = await self.page.evaluate("window.calls.filter(c => c.method === 'robot.speech' && c.params.enabled !== undefined).map(c => c.params.enabled)")
+        self.assertEqual(values, [True, False])
+        self.assertFalse(await self.page.evaluate("window.calls.some(c => c.method === 'robot.enable')"))
+
+    async def test_reserved_vision_and_missing_speech_are_disabled(self):
+        await self.mock_features()
+        self.assertTrue(await self.page.locator('#vision-switch').is_disabled())
+        self.assertIn('预留', await self.page.locator('#vision-status').text_content())
+        await self.page.evaluate("window.speechFeature.available=false; pollFeatures()")
+        self.assertTrue(await self.page.locator('#speech-switch').is_disabled())
+
+    async def test_speech_fault_is_shown_and_can_be_retried(self):
+        await self.mock_features()
+        await self.page.locator('#speech-switch').click()
+        await self.page.evaluate("Object.assign(window.speechFeature, {enabled:false,state:'error',reason:'麦克风无法打开'}); pollFeatures()")
+        self.assertIn('麦克风无法打开', await self.page.locator('#speech-status').text_content())
+        self.assertTrue(await self.page.locator('#speech-switch').is_enabled())
+
+    async def test_late_feature_reply_cannot_reenable_after_disconnect(self):
+        await self.mock_features()
+        await self.page.evaluate("() => { call = () => new Promise(resolve => window.featureReply = resolve); }")
+        await self.page.locator('#speech-switch').click()
+        self.assertTrue(await self.page.locator('#speech-switch').is_disabled())
+        await self.page.evaluate("open = () => false; stopTelemetry(); window.featureReply({accepted:true,available:true,enabled:true,state:'on'})")
+        self.assertTrue(await self.page.locator('#speech-switch').is_disabled())
+        self.assertIn('连接已断开', await self.page.locator('#speech-status').text_content())
+
 
 if __name__ == "__main__":
     unittest.main()

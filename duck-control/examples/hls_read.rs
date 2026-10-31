@@ -58,7 +58,7 @@ const SHORT_NAMES: [&str; NUM_JOINTS] = [
     "r_yaw", "r_rol", "r_pit", "r_kne", "r_ank", // right leg
 ];
 
-/// TTY columns: IDs 10–14, then 20–24, then 30–34. Each entry is an index
+/// TTY columns: IDs 10–14, then 20–24, then 30–33 and 15. Each entry is an index
 /// into [`JOINT_IDS`] / [`SHORT_NAMES`] / the sample array.
 const COL_ORDER: [usize; NUM_JOINTS] = [10, 11, 12, 13, 14, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
@@ -136,7 +136,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     if n_alive == 0 {
         return Err(
-            "no duck servo answered (IDs 10-14 / 20-24 / 30-34; 200 is not on this bus)".into(),
+            "no duck servo answered (IDs 10-15 / 20-24 / 30-33; 200 is not on this bus)".into(),
         );
     }
 
@@ -381,6 +381,6 @@ Linux / the robot:
   sudo systemctl stop robotd
   cargo run -p duck-control --example hls_read -- /dev/ttyACM0
 
-Reads every duck servo ID (10-14, 20-24, 30-34). ID 200 is the retired IMU
+Reads every duck servo ID (10-15, 20-24, 30-33). ID 200 is the retired IMU
 and is skipped. Does not enable torque or write registers.
 ";
