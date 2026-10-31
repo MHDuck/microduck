@@ -181,8 +181,8 @@
   <section>
     <h2>posture</h2>
     <div class="row">
-      <button data-call="robot.enable" data-params='{"on":true,"toggle":true}'>enable ⇄</button>
-      <button data-call="robot.init">init</button>
+      <button data-stand-up>enable · 起身</button>
+      <button data-stand-up>init · 起身</button>
       <button data-call="robot.relax">relax</button>
       <button data-call="robot.stop" data-confirm="Zero the robot's intents?">stop</button>
       <button data-call="robot.shutdown" data-confirm="Power the robot off?">shutdown</button>
@@ -190,8 +190,10 @@
     <p class="hint">
       <b>stop</b> zeroes the intents this session is sending. It is not a physical emergency stop —
       nothing here cuts power to the servos — and it is a plain button for that reason.
-      <b>enable</b> toggles, so it always means "the other one" and cannot go stale.
+      <b>enable / init</b> 都请求 StandUp 起身（与键盘 Enter 使用同一起身动作）；请先扶稳机器人。
+      起身最多 12 秒，过流保护仍生效；需要卸力时按 <b>relax</b>。
     </p>
+    <p id="standup-status" role="status" aria-live="polite"></p>
   </section>
 
   <section>
@@ -605,6 +607,7 @@ function startTelemetry() {
 }
 
 function stopTelemetry() {
+  if (standUpPending) finishStandUp("连接已断开，无法确认起身结果；重新连接后检查状态。", true);
   clearInterval(healthTimer); healthTimer = null;
   clearInterval(statsTimer); statsTimer = null;
   // Rejected rather than dropped: a promise that is merely forgotten leaves its awaiting caller
@@ -645,6 +648,16 @@ async function poll() {
 
 function onState(state) {
   if (!state) return;
+  if (standUpPending) {
+    if (state.policy === "standup") {
+      sawStandUp = true;
+      $("standup-status").textContent = "起身中……请保持支撑，等待站稳。";
+    } else if (sawStandUp && state.policy === "stand") {
+      finishStandUp("起身完成，可以行走。");
+    } else if (sawStandUp && state.policy === "protection") {
+      finishStandUp("起身失败：保护触发。请查看 SAFETY 和日志，摆好姿势后重试。", true);
+    }
+  }
   $("t-policy").textContent = state.policy || "–";
   const loop = state.loop || {};
   $("t-loop").textContent = `${(loop.hz || 0).toFixed(1)} Hz · ${loop.missed || 0} missed`;
@@ -721,6 +734,7 @@ function keyTwist() {
 const padTwist = { vx: 0, vy: 0, vyaw: 0 };
 
 function refreshTwist() {
+  if (standUpPending) return;
   const fromKeys = keyTwist();
   // The pads win where they are held, because a pad at rest is 0 and adding the two would make a
   // key held while a pad is pushed produce a velocity neither asked for.
@@ -734,14 +748,14 @@ function refreshTwist() {
 }
 
 setInterval(() => {
-  if (sending) tell("robot.move", { vx: twist.vx, vy: twist.vy, vyaw: twist.vyaw });
+  if (sending && !standUpPending) tell("robot.move", { vx: twist.vx, vy: twist.vy, vyaw: twist.vyaw });
 }, 1000 / INTENT_HZ);
 
 addEventListener("keydown", (event) => {
   // Keys are the robot's while nothing text-shaped has focus — the raw box in the drawer is a
   // text field, and typing `robot.mode` into it should not walk the robot across the room. The
   // optional call is for a keydown whose target is the document itself, which has no `matches`.
-  if (event.target?.matches?.("input, textarea, select")) return;
+  if (standUpPending || event.target?.matches?.("input, textarea, select")) return;
   const key = event.key.toLowerCase();
   if (!["w", "a", "s", "d", "q", "e", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(key)) return;
   event.preventDefault();
@@ -917,7 +931,7 @@ function aim(event) {
 // Its own timer rather than the twist's: a gaze and a velocity are separate intents, and one
 // stopping must not stop the other.
 setInterval(async () => {
-  if (!looking || !lookAt || !open()) return;
+  if (standUpPending || !looking || !lookAt || !open()) return;
   const point = lookAt;
   try {
     const result = await call("robot.look", point, true);
@@ -927,12 +941,64 @@ setInterval(async () => {
 
 // ── posture, skills, sounds ────────────────────────────────────────────────────
 
+let standUpPending = false, sawStandUp = false, standUpTimer = null, standUpGeneration = 0;
+
+function finishStandUp(message, failed = false) {
+  clearTimeout(standUpTimer);
+  standUpGeneration++;
+  standUpPending = false;
+  keys.clear();
+  sending = looking = false;
+  lookAt = null;
+  for (const axis of [twist, padTwist]) Object.assign(axis, { vx: 0, vy: 0, vyaw: 0 });
+  for (const button of document.querySelectorAll("button[data-stand-up]")) button.disabled = false;
+  $("standup-status").textContent = message;
+  $("standup-status").className = failed ? "bad" : "in";
+}
+
+async function standUp() {
+  if (standUpPending) return;
+  const generation = ++standUpGeneration;
+  const current = () => standUpPending && generation === standUpGeneration;
+  standUpPending = true;
+  sawStandUp = false;
+  keys.clear();
+  sending = looking = false;
+  lookAt = null;
+  for (const axis of [twist, padTwist]) Object.assign(axis, { vx: 0, vy: 0, vyaw: 0 });
+  for (const button of document.querySelectorAll("button[data-stand-up]")) button.disabled = true;
+  $("standup-status").className = "";
+  $("standup-status").textContent = "检查 IMU 和 StandUp 模型……";
+  try {
+    const health = await call("robot.health");
+    if (!current()) return;
+    if (!health.healthy || !health.imu?.ready) throw new Error(health.reason || "robotd / IMU 未就绪，请稍后重试。");
+    const models = await call("robot.subscribe", { hz: 2 });
+    if (!current()) return;
+    if (models.unavailable || !models.stand) throw new Error(models.unavailable || "未配置 StandUp 模型。");
+    await call("robot.stop");
+    if (!current()) return;
+    // StandUp owns the reset and fall-recovery window in robotd; do not bypass its safety checks.
+    const result = await call("robot.enable", { on: true, toggle: false, stand_up: true });
+    if (!current()) return;
+    if (!result.accepted) throw new Error(result.reason || "起身请求被拒绝。");
+    $("standup-status").textContent = "已请求起身，等待 StandUp 状态……";
+    standUpTimer = setTimeout(() => finishStandUp(
+      "未收到起身完成状态；请查看 POLICY / SAFETY 和 robotd 日志后再重试。", true), 14000);
+  } catch (error) {
+    if (current()) finishStandUp(`起身失败：${error.message || JSON.stringify(error)}`, true);
+  }
+}
+
+for (const button of document.querySelectorAll("button[data-stand-up]")) button.onclick = standUp;
+
 for (const button of document.querySelectorAll("button[data-call]")) {
   button.onclick = () => {
     const confirmation = button.dataset.confirm;
     // On `stop` and `shutdown` only. A confirm on either is what keeps `stop` from reading as an
     // emergency stop: an e-stop is a thing you hit, and this is a request the robot may refuse.
     if (confirmation && !confirm(confirmation)) return;
+    if (button.dataset.call === "robot.relax" && standUpPending) finishStandUp("起身已取消，正在请求卸力。");
     const params = button.dataset.params ? JSON.parse(button.dataset.params) : {};
     call(button.dataset.call, params).catch(() => {});
   };
