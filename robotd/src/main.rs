@@ -23,6 +23,7 @@ mod bno085;
 mod chorale;
 mod control;
 mod intents;
+mod joints;
 mod params;
 mod soc;
 mod sound;
@@ -420,6 +421,7 @@ struct RobotState {
     /// renders the bank and restarts robotd, so a bank cannot appear under a running one.
     has_voice: bool,
     speech: speech::Speech,
+    joints: joints::Joints,
     /// Whether a theremin can be picked up: the params allow one, and the depth stream is
     /// actually delivering frames. Published by the loop rather than read once at startup,
     /// because unlike a voice bank the sensor comes and goes — `tofd` restarts, the ToF
@@ -483,6 +485,7 @@ impl RobotState {
             policies: ArcSwap::from_pointee(PolicyNames::of(&params.resolved_policy())),
             has_voice: params.audio.enabled && has_any_wav(&params.audio.bank),
             speech: speech::Speech::new(PathBuf::from("/home/radxa/microduck-speech/current")),
+            joints: joints::Joints::default(),
             theremin_ready: AtomicBool::new(false),
             chorale_accepted: params.chorale.accept,
             mode: AtomicU8::new(mode_code(params.policy.mode)),
@@ -1779,6 +1782,125 @@ async fn control_loop<T: RobotIo, U: ImuIo>(
         // `known_positions` only advances on fresh ones, so a coasted tick cannot pretend to
         // know where the joints have moved to.
         let sensors = coast.sample(fresh);
+
+        // This branch owns the bus until its selected joints are confirmed off. No normal
+        // policy, HOME ramp or independent mouth writer runs during a debug lease.
+        if state.joints.prepare(
+            fresh.as_ref(),
+            state.torque_off.load(Ordering::SeqCst)
+                && bringup == Bringup::Limp
+                && !intents.enabled()
+                && !state.speech.enabled()
+                && safety.protection().is_none()
+                && !powered_off
+                && shutdown_sit.is_none()
+                && mode_change.is_none(),
+            tick_start,
+        ) {
+            if let Some(sample) = fresh.as_ref() {
+                safety.observe_with_recovery(sample, period, false);
+            }
+            state
+                .joints
+                .tick(&mut safety, fresh.is_some(), period, tick_start);
+            intents.stop();
+            intents.set_enabled(false);
+            intents.set_head([0.0; 4]);
+            intents.set_pose(intents::PoseIntent::default());
+            if matches!(
+                intents.take_power_request(),
+                Some(intents::PowerRequest::Relax)
+            ) {
+                intents.request_relax();
+            }
+            intents.take_skills();
+            intents.take_mode_switch();
+            intents.take_theremin_request();
+            intents.take_chorale_request();
+            intents.take_chorale_heard();
+            intents.take_sounds();
+            intents.request_sound(proto::SoundParams {
+                tag: proto::SoundTag::Wheee,
+                hold: Some(false),
+            });
+            last_mouth_generation = intents.snapshot().mouth_generation;
+            if let Some(instrument) = theremin.as_mut() {
+                instrument.set_active(false);
+            }
+            if let Some(ensemble) = chorale.as_mut() {
+                ensemble.set_active(false, tick_start, None);
+            }
+            if let Some(voice) = voice.as_mut() {
+                voice.theremin_stop();
+                voice.sing_stop();
+            }
+            chorale_mouth = 0.0;
+            chorale_head = [0.0; 4];
+            mouth_only_torqued = false;
+            was_driving = false;
+            was_enabled = false;
+            state.moving.store(false, Ordering::Relaxed);
+            state.homed.store(false, Ordering::Relaxed);
+            state.fallen.store(safety.fallen(), Ordering::Relaxed);
+            state
+                .protection_latched
+                .store(safety.protection().is_some(), Ordering::Relaxed);
+            if state.state_tx.receiver_count() > 0
+                && let Some(sample) = fresh.as_ref()
+            {
+                let _ = state.state_tx.send(proto::RobotState {
+                    t: state.started.elapsed().as_secs_f64(),
+                    movement: proto::MoveState {
+                        requested: [0.0; 3],
+                        applied: [0.0; 3],
+                        limited_by: vec![],
+                    },
+                    head: sample.positions[5..9].try_into().unwrap(),
+                    policy: "joints".into(),
+                    safety: proto::SafetyState {
+                        fallen: safety.fallen(),
+                        limp: false,
+                        gravity: sample.imu.gravity,
+                        gain: safety.gain(),
+                        fall: None,
+                    },
+                    control_loop: proto::LoopState {
+                        hz: f64::from_bits(state.achieved_hz.load(Ordering::Relaxed)),
+                        missed: state.missed.load(Ordering::Relaxed),
+                    },
+                    joints: sample.positions.to_vec(),
+                    targets: state.joints.targets(sample.positions),
+                    current: None,
+                    odom: proto::OdomState {
+                        position: odometry.position(),
+                        yaw: odometry.yaw(),
+                    },
+                    theremin: None,
+                    chorale: None,
+                });
+            }
+            // Keep health and slow telemetry live while bypassing the ordinary writers.
+            state.ticks.fetch_add(1, Ordering::Relaxed);
+            state.last_tick_us.store(
+                state.started.elapsed().as_micros() as u64,
+                Ordering::Relaxed,
+            );
+            if tick_start.elapsed() > period {
+                state.missed.fetch_add(1, Ordering::Relaxed);
+            }
+            window_ticks += 1;
+            let window = window_start.elapsed();
+            if window >= RATE_WINDOW {
+                state.achieved_hz.store(
+                    (window_ticks as f64 / window.as_secs_f64()).to_bits(),
+                    Ordering::Relaxed,
+                );
+                window_start = Instant::now();
+                window_ticks = 0;
+                publish_slow_sensors(&mut safety, &state);
+            }
+            continue;
+        }
 
         let mut power_request = intents.take_power_request();
         if let Some(intents::PowerRequest::StandUp { ignore_protection }) = power_request {
@@ -3371,7 +3493,9 @@ async fn handle(
         // useful to say about a velocity that is superseded 20 ms later.
         let Some(id) = request.id.clone() else {
             if let Ok(call) = call {
-                apply_intent(&intents, &call);
+                if !state.joints.blocks(&call) {
+                    apply_intent(&intents, &call);
+                }
             }
             continue;
         };
@@ -3475,6 +3599,30 @@ fn dispatch(
     id: proto::Id,
     call: &proto::Call,
 ) -> proto::Response {
+    if let proto::Call::RobotJoints(params) = call {
+        return proto::Response::ok(
+            Some(id),
+            &state.joints.request(
+                params,
+                state.torque_off.load(Ordering::SeqCst)
+                    && !intents.enabled()
+                    && !state.speech.enabled()
+                    && !state.protection_latched.load(Ordering::Relaxed),
+            ),
+        );
+    }
+    if state.joints.blocks(call) {
+        return proto::Response::ok(
+            Some(id),
+            &proto::IntentResult::refused("舵机调试会话期间禁止其他运动来源，请先释放会话"),
+        );
+    }
+    if matches!(
+        call,
+        proto::Call::RobotStop | proto::Call::RobotRelax | proto::Call::RobotShutdown
+    ) {
+        state.joints.cancel();
+    }
     if matches!(
         call,
         proto::Call::RobotStop
@@ -5573,6 +5721,148 @@ mod tests {
         state.shutdown.store(true, Ordering::Relaxed);
         task.await.unwrap();
         assert!(!state.health().torque_off, "control thread has gone away");
+    }
+
+    #[tokio::test]
+    async fn joints_session_uses_only_selected_joint_and_exits_limp_without_home() {
+        let state = Arc::new(RobotState::new(&Params::default(), false, false));
+        let intents = Arc::new(Intents::new());
+        let loop_state = state.clone();
+        let loop_intents = intents.clone();
+        let task = tokio::spawn(async move {
+            let mut io = FakeIo::new().frozen();
+            control_loop_probe_with(
+                &mut io,
+                &mut FakeImu::new(),
+                loop_state,
+                loop_intents,
+                Duration::from_millis(2),
+            )
+            .await;
+            io
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        intents.request_relax();
+        while !state.health().torque_off && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert!(state.health().torque_off);
+        let call = |p| {
+            dispatch(
+                &state,
+                &intents,
+                proto::Id::Number(1),
+                &proto::Call::RobotJoints(p),
+            )
+            .result_as::<proto::JointsResult>()
+            .unwrap()
+        };
+        let begin = call(proto::JointsParams {
+            op: proto::JointsOp::Begin,
+            ..Default::default()
+        });
+        assert!(begin.accepted, "{:?}", begin.reason);
+        let token = begin.token.unwrap();
+        assert!(
+            call(proto::JointsParams {
+                op: proto::JointsOp::Set,
+                token: Some(token.clone()),
+                seq: Some(1),
+                id: Some(30),
+                radians: Some(0.1)
+            })
+            .accepted
+        );
+        while !call(proto::JointsParams::default()).joints[5].enabled && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert!(call(proto::JointsParams::default()).joints[5].enabled);
+        let refused: proto::IntentResult = dispatch(
+            &state,
+            &intents,
+            proto::Id::Number(2),
+            &proto::Call::RobotInit,
+        )
+        .result_as()
+        .unwrap();
+        assert!(!refused.accepted);
+        assert!(
+            call(proto::JointsParams {
+                op: proto::JointsOp::Release,
+                token: Some(token),
+                seq: Some(2),
+                ..Default::default()
+            })
+            .accepted
+        );
+        while state.joints.active() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert!(!state.joints.active());
+        assert!(state.health().torque_off);
+        let ticks = state.ticks.load(Ordering::Relaxed);
+        while state.ticks.load(Ordering::Relaxed) < ticks + 5 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert!(!intents.enabled());
+        assert!(!state.homed.load(Ordering::Relaxed));
+        state.shutdown.store(true, Ordering::Relaxed);
+        let io = task.await.unwrap();
+        assert_eq!(
+            io.last_written, None,
+            "debug or its exit wrote a body/HOME target"
+        );
+        assert_eq!(io.last_joint_written.unwrap().0, 5);
+        assert_eq!(io.last_joint_torque, Some((5, false)));
+    }
+
+    #[test]
+    fn debug_cancellation_keeps_normal_stop_relax_and_shutdown_requests() {
+        for call in [
+            proto::Call::RobotStop,
+            proto::Call::RobotRelax,
+            proto::Call::RobotShutdown,
+        ] {
+            let state = state();
+            let intents = Intents::new();
+            state.torque_off.store(true, Ordering::SeqCst);
+            state.joints.prepare(
+                Some(&duck_control::Sensors::default()),
+                true,
+                Instant::now(),
+            );
+            assert!(
+                state
+                    .joints
+                    .request(
+                        &proto::JointsParams {
+                            op: proto::JointsOp::Begin,
+                            ..Default::default()
+                        },
+                        true
+                    )
+                    .accepted
+            );
+            let result: proto::IntentResult =
+                dispatch(&state, &intents, proto::Id::Number(1), &call)
+                    .result_as()
+                    .unwrap();
+            assert!(result.accepted);
+            assert!(!state.joints.active());
+            assert!(!intents.enabled());
+            assert_eq!(
+                intents.take_shutdown(),
+                matches!(call, proto::Call::RobotShutdown)
+            );
+            assert_eq!(
+                intents.take_power_request(),
+                if matches!(call, proto::Call::RobotRelax) {
+                    Some(intents::PowerRequest::Relax)
+                } else {
+                    None
+                }
+            );
+        }
     }
 
     /// A mouth notification on a limp robot is narrower than `robot.init`: it powers and

@@ -47,11 +47,17 @@ impl<T: RobotIo> RobotIo for ReportedIo<T> {
     }
 
     fn write(&mut self, targets: &JointTargets) -> Result<()> {
+        // HD1910 WritePosEx can energise a servo even without a separate torque-on.
+        self.invalidate();
         let result = self.io.write(targets);
         self.observe(result)
     }
 
     fn write_joint(&mut self, joint: usize, target: f64) -> Result<()> {
+        self.off.store(false, Ordering::SeqCst);
+        if let Some(known) = self.known_off.get_mut(joint) {
+            *known = false;
+        }
         let result = self.io.write_joint(joint, target);
         self.observe(result)
     }
@@ -208,5 +214,24 @@ mod tests {
         io.set_torque(false).unwrap();
         drop(io);
         assert!(!flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn position_writes_revoke_off_before_hd1910_can_power_itself() {
+        let (mut io, flag) = fixture();
+        io.set_torque(false).unwrap();
+        io.write_joint(MOUTH_INDEX, 0.0).unwrap();
+        assert!(!flag.load(Ordering::SeqCst));
+        io.set_joint_torque(MOUTH_INDEX, false).unwrap();
+        assert!(flag.load(Ordering::SeqCst));
+        io.write(&JointTargets {
+            positions: [0.0; NUM_JOINTS],
+        })
+        .unwrap();
+        io.set_joint_torque(MOUTH_INDEX, false).unwrap();
+        assert!(
+            !flag.load(Ordering::SeqCst),
+            "full position write may have powered the body"
+        );
     }
 }

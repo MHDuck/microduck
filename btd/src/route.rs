@@ -83,7 +83,7 @@ fn permits(call: &proto::Call) -> bool {
         // session must be able to make before it has made any other.
         SystemAuthenticate(_) => true,
         // Voice may issue movement commands; use the visible WebRTC control surface.
-        RobotSpeech(_) | RobotVision(_) => false,
+        RobotSpeech(_) | RobotVision(_) | RobotJoints(_) => false,
 
         // ── the update subset §4.1 names ────────────────────────────────────
         //

@@ -177,7 +177,10 @@ pub const JSONRPC_VERSION: &str = "2.0";
 ///
 /// # v19 — runtime microphone control and reserved vision switch
 /// `robot.speech` queries or changes keyword control; `robot.vision` reports its reserved status.
-pub const API_VERSION: u32 = 19;
+///
+/// # v20 — leased individual-joint adjustment
+/// `robot.joints` exposes mechanical limits and exclusive, expiring debug sessions.
+pub const API_VERSION: u32 = 20;
 
 /// The longest an update may legitimately go quiet, in seconds — the pre-install hook's ceiling.
 ///
@@ -333,6 +336,7 @@ pub mod method {
     pub const ROBOT_ENABLE: &str = "robot.enable";
     pub const ROBOT_SPEECH: &str = "robot.speech";
     pub const ROBOT_VISION: &str = "robot.vision";
+    pub const ROBOT_JOINTS: &str = "robot.joints";
 
     // ── power to the joints ──────────────────────────────────────────────────
     //
@@ -636,6 +640,8 @@ pub enum Call {
     RobotSpeech(FeatureParams),
     /// Reserved recognition control; currently reports unavailable.
     RobotVision(FeatureParams),
+    /// Exclusive, leased single-joint adjustment through the control loop.
+    RobotJoints(JointsParams),
     /// Power the joints and ramp to the home pose. No policy needed.
     RobotInit,
     /// Cut power to the joints. The robot collapses if nothing holds it.
@@ -780,6 +786,7 @@ impl Call {
             Call::RobotEnable(_) => method::ROBOT_ENABLE,
             Call::RobotSpeech(_) => method::ROBOT_SPEECH,
             Call::RobotVision(_) => method::ROBOT_VISION,
+            Call::RobotJoints(_) => method::ROBOT_JOINTS,
             Call::RobotInit => method::ROBOT_INIT,
             Call::RobotRelax => method::ROBOT_RELAX,
             Call::RobotDo(_) => method::ROBOT_DO,
@@ -903,6 +910,7 @@ impl Call {
             | Call::RobotEnable(_)
             | Call::RobotSpeech(_)
             | Call::RobotVision(_)
+            | Call::RobotJoints(_)
             | Call::RobotInit
             | Call::RobotRelax
             | Call::RobotDo(_)
@@ -994,6 +1002,7 @@ impl Call {
             Call::RobotLook(p) => encode(p),
             Call::RobotEnable(p) => encode(p),
             Call::RobotSpeech(p) | Call::RobotVision(p) => encode(p),
+            Call::RobotJoints(p) => encode(p),
             Call::RobotDo(p) => encode(p),
             Call::RobotPose(p) => encode(p),
             Call::RobotMouth(p) => encode(p),
@@ -1070,6 +1079,7 @@ impl Call {
             method::ROBOT_ENABLE => Call::RobotEnable(decode(params)?),
             method::ROBOT_SPEECH => Call::RobotSpeech(decode(params)?),
             method::ROBOT_VISION => Call::RobotVision(decode(params)?),
+            method::ROBOT_JOINTS => Call::RobotJoints(decode(params)?),
             method::ROBOT_INIT => Call::RobotInit,
             method::ROBOT_RELAX => Call::RobotRelax,
             method::ROBOT_DO => Call::RobotDo(decode(params)?),
@@ -1209,6 +1219,7 @@ pub mod test_support {
                 enabled: Some(false),
             }),
             Call::RobotVision(FeatureParams::default()),
+            Call::RobotJoints(JointsParams::default()),
             Call::RobotRelax,
             Call::RobotDo(DoParams {
                 skill: Skill::GroundPick,
@@ -1886,6 +1897,58 @@ pub struct FeatureResult {
     /// `off`, `starting`, `on`, `error`, or `reserved`.
     pub state: String,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JointsOp {
+    #[default]
+    Status,
+    Begin,
+    Keepalive,
+    Set,
+    Release,
+}
+
+/// Angles are radians in JOINT_NAMES order, never raw encoder counts.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct JointsParams {
+    pub op: JointsOp,
+    pub token: Option<String>,
+    pub seq: Option<u64>,
+    pub id: Option<u8>,
+    pub radians: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JointStatus {
+    pub index: usize,
+    pub id: u8,
+    pub name: String,
+    pub min: f64,
+    pub max: f64,
+    pub position: Option<f64>,
+    /// Last target successfully written by this adjustment session.
+    pub target: Option<f64>,
+    /// Powered by this session; not a general hardware torque-register readout.
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JointsResult {
+    pub accepted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub active: bool,
+    /// Returned only by begin, never by public status polling.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    pub lease_ms: u64,
+    pub fresh: bool,
+    pub joints: Vec<JointStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// What an apply should move to.
@@ -3840,6 +3903,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn joints_defaults_to_status_and_strictly_roundtrips_selected_bus_id() {
+        assert_eq!(
+            Call::parse("robot.joints", Some(&serde_json::json!({}))).unwrap(),
+            Call::RobotJoints(JointsParams::default())
+        );
+        let value = serde_json::json!({"op":"set","token":"session","seq":3,"id":34,"radians":0.2});
+        let call = Call::parse("robot.joints", Some(&value)).unwrap();
+        assert_eq!(Request::call(Id::Number(2), &call).as_call().unwrap(), call);
+        assert_eq!(call.destination(), Some((Service::Robot, Lane::Prompt)));
+        for value in [
+            serde_json::json!({"op":"write_all"}),
+            serde_json::json!({"id":256}),
+            serde_json::json!({"op":"set","degrees":30}),
+        ] {
+            assert!(Call::parse("robot.joints", Some(&value)).is_err());
+        }
+    }
+
+    #[test]
     fn feature_switches_query_without_mutation_and_require_boolean_values() {
         assert_eq!(
             serde_json::from_str::<FeatureParams>("{}").unwrap().enabled,
@@ -4015,7 +4097,7 @@ mod tests {
     fn every_call_covers_every_variant() {
         assert_eq!(
             every_call().len(),
-            48,
+            49,
             "a Call variant was added or removed — update every_call() and this count"
         );
     }

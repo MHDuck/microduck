@@ -632,6 +632,7 @@ impl Server {
             | Call::RobotEnable(_)
             | Call::RobotSpeech(_)
             | Call::RobotVision(_)
+            | Call::RobotJoints(_)
             | Call::RobotInit
             | Call::RobotRelax
             | Call::RobotDo(_)

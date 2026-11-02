@@ -83,7 +83,7 @@ fn permits(call: &proto::Call) -> bool {
         // Bluetooth was not. Permitted for that reason, and it would be worth revisiting if a
         // control-only session without video ever becomes a normal thing.
         RobotEnable(_) | RobotInit | RobotRelax => true,
-        RobotSpeech(_) | RobotVision(_) => true,
+        RobotSpeech(_) | RobotVision(_) | RobotJoints(_) => true,
 
         // `robot.stop` is permitted here and refused over BLE, and the difference is honesty
         // rather than authority. BLE's objection was that a stop button over "an unbonded,
@@ -282,6 +282,7 @@ mod tests {
                 proto::Call::RobotMove(_)
                     | proto::Call::RobotSpeech(_)
                     | proto::Call::RobotVision(_)
+                    | proto::Call::RobotJoints(_)
                     | proto::Call::RobotHead(_)
                     | proto::Call::RobotLook(_)
                     | proto::Call::RobotStop

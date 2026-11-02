@@ -100,6 +100,10 @@ impl Speech {
         }
     }
 
+    pub fn enabled(&self) -> bool {
+        self.active.load(Ordering::Acquire)
+    }
+
     pub fn request(&self, enabled: Option<bool>) -> FeatureResult {
         let mut status = self.status.lock().unwrap();
         status.1.available = [".venv/bin/python", "recognize.py"]
