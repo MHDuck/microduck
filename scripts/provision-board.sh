@@ -750,6 +750,10 @@ fi
 _stage="sudo install -d -m 755 '${_remote_local}' && sudo tar -xzf /tmp/microduck-local.tar.gz -C '${_remote_local}' && "
 # Install before the reboot; the UART overlay is not live yet and the debug service must stay off.
 _stage="${_stage}mkdir -p \"\$HOME/microduck/tools/servo-web\" && tar -xzf '${_remote_local}/tools/servo-web/dist/servo-web-board.tar.gz' -C \"\$HOME/microduck/tools/servo-web\" && bash \"\$HOME/microduck/tools/servo-web/deploy-board.sh\" /dev/ttyS4 --install-only && "
+_resuming_phase_two=""
+if rsh "test -f ${STATE}"; then
+    _resuming_phase_two=1
+fi
 _phase_status=0
 ssh -t -o StrictHostKeyChecking=accept-new "$HOST" \
     "${_stage}sudo env ${_env} sh /tmp/provision.sh${_args}" || _phase_status=$?
@@ -855,6 +859,12 @@ if ! choose_log_reader; then
     ssh -t ${HOST} 'sudo tail -f ${LOG}'
   A board provisioned by a current provision.sh makes that log readable by the robot group,
   which you are in after the reboot; an older one left it root-only."
+fi
+
+# A direct phase-2 retry already printed its output over SSH; the saved log is from the failed run.
+if [ -n "$_resuming_phase_two" ] && [ "$_phase_status" = 0 ]; then
+    _seen="$(rsh "${LOG_READ}sh -c 'test -f ${LOG} && wc -c < ${LOG} || echo 0'" 2>/dev/null || echo 0)"
+    case "$_seen" in ''|*[!0-9]*) _seen=0 ;; esac
 fi
 
 while :; do
