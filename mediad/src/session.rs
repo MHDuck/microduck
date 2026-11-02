@@ -39,7 +39,7 @@ use crate::upstream::Pool;
 /// `inbound` carries one JSON-RPC object per item, as the peer sent it. `outbound` is where replies
 /// and notifications go, merged from every service — the peer sorts them out by `id`, which is its
 /// business rather than ours.
-/// What the video is: the frame the encoder sends, and how far the camera is mounted from upright.
+/// What the video is: the encoded geometry and remaining turn needed to display it upright.
 ///
 /// Held by the session because a peer has to be able to *ask*. Pushing it when the channel appears
 /// races the browser: `mediad` writes the line the moment `webrtcsink` hands over the channel, and
@@ -51,7 +51,7 @@ use crate::upstream::Pool;
 pub struct Video {
     pub width: u32,
     pub height: u32,
-    /// Degrees clockwise the camera is mounted from upright.
+    /// Clockwise correction still needed. Zero when pixels were already turned by the pipeline.
     pub rotate: u32,
 }
 
@@ -69,6 +69,7 @@ const APP_TIMEOUT: Duration = Duration::from_secs(2);
 /// browser receives is the picture the camera took, sideways on a robot whose camera is mounted a
 /// quarter turn off. The page cannot work out by how much: a 180° mount is indistinguishable from an
 /// upright one, and even a quarter turn is only a guess from the aspect ratio. So it is told.
+/// An opt-in pixel transform reports zero remaining rotation and its encoded dimensions instead.
 ///
 /// A notification, with no id, because the page already treats an id-less line as something that
 /// streams (`robot.state` is the other one) — no new mechanism at either end.

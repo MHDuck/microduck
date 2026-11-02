@@ -82,6 +82,10 @@ struct Args {
     #[arg(long, default_value_t = 90)]
     rotate: u32,
 
+    /// Additional clockwise turn relative to --rotate; use 180 for an upside-down mount.
+    #[arg(long, env = "DUCK_CAMERA_ROTATE_OFFSET", default_value_t = 0)]
+    rotate_offset: u32,
+
     /// Leave the exposure where `--exposure` and `--analogue-gain` put it, instead of metering.
     ///
     /// **The software loop is on by default because the board's 3A engine only does this once.**
@@ -99,7 +103,7 @@ struct Args {
     /// breaks `mpph264enc`'s zero-copy path to the SoC's 2D engine, so MPP converts every frame in
     /// software: measured at 97 °C, the CPU throttled to 408 MHz and 8 fps out of a 30 fps camera.
     /// Worth it only for a consumer that cannot rotate for itself.
-    #[arg(long)]
+    #[arg(long, env = "DUCK_CAMERA_ROTATE_PIXELS")]
     flip_in_pipeline: bool,
 }
 
@@ -130,7 +134,18 @@ fn main() -> ExitCode {
     // should say so rather than opening a camera first.
     // Validated even when the pipeline will not use it, because it is still what every consumer is
     // told about the mount — a typo should not reach the console as a rotation nobody can apply.
-    let mount = match mediad::pipeline::Rotation::from_degrees(args.rotate) {
+    let orientation = match mediad::orientation::CameraOrientation::new(
+        args.rotate,
+        args.rotate_offset,
+        args.flip_in_pipeline,
+    ) {
+        Ok(orientation) => orientation,
+        Err(error) => {
+            tracing::error!(error, "mediad cannot start");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mount = match mediad::pipeline::Rotation::from_degrees(orientation.mount_degrees) {
         Ok(rotation) => rotation,
         Err(e) => {
             tracing::error!(error = %e, "mediad cannot start");
@@ -156,21 +171,25 @@ fn main() -> ExitCode {
         fps = media.quality.fps(),
         bitrate = media.bitrate_resolved(),
         congestion_control = media.congestion_control.nick(),
+        rotate_base = args.rotate,
+        rotate_offset = args.rotate_offset,
+        pixel_rotation = orientation.pixel_degrees,
+        consumer_rotation = orientation.consumer_degrees,
         "streaming"
     );
     // The same angle the detector needs, in its own vocabulary: it folds the turn into the
     // resampling it already does, which is why nothing in the pipeline has to.
-    let turn = match duck_detect::Turn::from_degrees(args.rotate) {
+    let turn = match duck_detect::Turn::from_degrees(orientation.consumer_degrees) {
         Some(turn) => turn,
         None => {
-            tracing::error!(degrees = args.rotate, "mediad cannot start");
+            tracing::error!(degrees = orientation.consumer_degrees, "mediad cannot start");
             return ExitCode::FAILURE;
         }
     };
 
     let rotation = if args.flip_in_pipeline {
         tracing::warn!(
-            degrees = args.rotate,
+            degrees = orientation.pixel_degrees,
             "--flip-in-pipeline: rotating in the pipeline costs the encoder its zero-copy path"
         );
         mount
@@ -315,12 +334,14 @@ fn main() -> ExitCode {
             }
         };
 
-        // What every peer is told about the picture. The geometry is the *encoded* frame — the
-        // pipeline does not rotate, so it is the capture geometry — and the rotation is the mount.
+        // Describe the encoded pixels. Already-turned pixels need no consumer rotation;
+        // quarter-turn pixel transforms also swap the encoded width and height.
+        let (video_width, video_height) =
+            orientation.encoded_size(media.quality.width(), media.quality.height());
         let video = mediad::session::Video {
-            width: media.quality.width(),
-            height: media.quality.height(),
-            rotate: args.rotate,
+            width: video_width,
+            height: video_height,
+            rotate: orientation.consumer_degrees,
         };
 
         // One session per peer, each with its own connections to the services it talks to. Per

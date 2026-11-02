@@ -18,6 +18,7 @@
 //! peer wired to [`session::run`].
 
 pub mod config;
+pub mod orientation;
 pub mod producer;
 pub mod route;
 pub mod session;
