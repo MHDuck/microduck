@@ -257,6 +257,7 @@ cd "$HOME/microduck-vision"
 | 相机/IMU/总线报错 | 查看只读健康与主程序日志，先处理故障；不通过放宽检测周期绕过 |
 | 图片上下颠倒 | 按[方向修正文档](相机方向修正_180度.md)处理 mediad，再刷新重连 |
 | OpenCV 下载报 Connection reset by peer | 电脑端自动重试，仍失败时重跑原一键部署命令，复用下载缓存，无需登录板子补装 |
+| vision-follow.service 报 bad unit file setting | 旧版生成的 WorkingDirectory 多了一对双引号；更新电脑端脚本后重跑原一键部署命令，自动覆盖坏配置并在启动前校验 |
 
 一键部署会先读取板端 Python 版本，在电脑端下载匹配的 ARM64 OpenCV 和 NumPy 安装包，默认使用清华 PyPI 镜像并保留已有 `PIP_INDEX_URL` 等设置。下载支持重试和续传，完整包缓存在 `vision_follow/wheels/`，下载齐全后才开始板端部署；板端通过 `--no-index` 从随包上传的缓存安装视觉依赖，不再访问 PyPI。
 此前部署中断时，更新电脑端脚本后重新运行原一键部署命令即可继续安装，并完成程序和语音同步。只有看到最终 `provisioning finished` 和 `vision is ready` 才表示整套流程结束。

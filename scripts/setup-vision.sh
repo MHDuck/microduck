@@ -21,7 +21,7 @@ wheel_dir="$repo/vision_follow/wheels/cp${python_tag}-aarch64"
 
 apt-get update
 apt-get install -y python3 python3-venv python3-pip ca-certificates curl
-if systemctl cat vision-follow.service >/dev/null 2>&1; then
+if systemctl is-active --quiet vision-follow.service; then
     systemctl stop vision-follow.service
 fi
 install -d -m 755 -o "$operator" -g "$operator_group" "$vision_dir"
@@ -48,7 +48,7 @@ Wants=mediad.service
 Type=exec
 User=$operator
 Group=$operator_group
-WorkingDirectory="$vision_dir"
+WorkingDirectory=$vision_dir
 ExecStart="$vision_dir/.venv/bin/python" "$vision_dir/serve.py" --detector aruco --marker-id 0 --marker-mm 50
 Restart=on-failure
 RestartSec=3
@@ -57,6 +57,7 @@ NoNewPrivileges=yes
 [Install]
 WantedBy=multi-user.target
 EOF
+systemd-analyze verify /etc/systemd/system/vision-follow.service
 systemctl daemon-reload
 systemctl restart mediad.service
 systemctl enable --now vision-follow.service
