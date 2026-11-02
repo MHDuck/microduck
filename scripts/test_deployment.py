@@ -402,6 +402,7 @@ path.write_text(json.dumps(states))
 
     def provision_fixture(self):
         script = self.write(self.root / "scripts/provision-board.sh", (ROOT / "scripts/provision-board.sh").read_text())
+        self.write(self.root / "speech/.venv/bin/python", '#!/bin/sh\nexit "${PIP_EXIT:-0}"\n')
         self.write(self.root / "setup-build.sh", '#!/bin/sh\necho bootstrap >> "$CALLS.steps"\n')
         self.write(self.home / ".cargo/env", ":\n")
         self.write(self.home / ".local/share/duck-build/bin/activate", 'VIRTUAL_ENV="$HOME/.local/share/duck-build"\n')
@@ -424,6 +425,7 @@ home = pathlib.Path(os.environ['HOME'])
 if not (home / 'key-installed').exists():
     print('Permission denied', file=sys.stderr); sys.exit(255)
 if cmd == 'test -L /opt/robot/daemon/current': sys.exit(int(os.environ.get('NEW_BOARD', '0')))
+if cmd.startswith("python3 -c "): print('313')
 if 'sudo env ' in cmd:
     (home / 'rebooting').touch(); sys.exit(255)
 if cmd == 'true' and (home / 'rebooting').exists():

@@ -607,6 +607,31 @@ fi
 
 say "preparing speech dependencies and model locally (no microphone access)"
 PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}" sh "$_root/speech/setup.sh"
+say "preparing ARM64 vision dependencies on this computer"
+_vision_python="$(rsh "python3 -c 'import sys; print(str(sys.version_info[0]) + str(sys.version_info[1]))'")" \
+    || die "could not read the board's Python version; re-run the same deployment command"
+case "$_vision_python" in
+    3[0-9]|3[0-9][0-9]) ;;
+    *) die "unexpected board Python version: $_vision_python" ;;
+esac
+_vision_wheels="$_root/vision_follow/wheels/cp${_vision_python}-aarch64"
+mkdir -p "$_vision_wheels"
+export PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+export PIP_TIMEOUT="${PIP_TIMEOUT:-90}" PIP_RETRIES="${PIP_RETRIES:-8}" PIP_RESUME_RETRIES="${PIP_RESUME_RETRIES:-8}"
+set -- --only-binary=:all: \
+    --platform manylinux2014_aarch64 --platform manylinux_2_17_aarch64 --platform manylinux_2_28_aarch64 \
+    --implementation cp --python-version "$_vision_python" --abi "cp$_vision_python" --abi abi3 --abi none \
+    --dest "$_vision_wheels" --find-links "$_vision_wheels" -r "$_root/vision_follow/requirements.txt"
+if ! "$_root/speech/.venv/bin/python" -m pip download --no-index "$@" >/dev/null 2>&1; then
+    for _vision_attempt in 1 2 3; do
+        if "$_root/speech/.venv/bin/python" -m pip download "$@"; then
+            break
+        fi
+        [ "$_vision_attempt" -lt 3 ] || die "vision download failed before board setup; re-run the same command to reuse the cache"
+        say "vision download interrupted; retrying ($_vision_attempt/3)"
+        sleep 2
+    done
+fi
 sh "$_root/scripts/dev-push.sh" --package-only
 if [ "$DEV_KEY" = "$DEV_KEY_DEFAULT" ]; then
     DEV_KEY="${DUCK_DEV_SECRET_KEY:-$HOME/.duck-keys/local.dev.key}"

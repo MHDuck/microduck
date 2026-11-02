@@ -15,6 +15,9 @@ for file in $files; do
 done
 camera_source="$repo/mediad/systemd/20-camera-upside-down.conf.example"
 [ -f "$camera_source" ] || { echo "missing camera direction configuration" >&2; exit 1; }
+python_tag="$(python3 -c 'import sys; print(str(sys.version_info[0]) + str(sys.version_info[1]))')"
+wheel_dir="$repo/vision_follow/wheels/cp${python_tag}-aarch64"
+[ -d "$wheel_dir" ] || { echo "missing vision wheels; re-run scripts/provision-board.sh from the computer" >&2; exit 1; }
 
 apt-get update
 apt-get install -y python3 python3-venv python3-pip ca-certificates curl
@@ -26,7 +29,8 @@ for file in $files; do
     install -m 644 -o "$operator" -g "$operator_group" "$repo/vision_follow/$file" "$vision_dir/$file"
 done
 runuser -u "$operator" -- python3 -m venv "$vision_dir/.venv"
-runuser -u "$operator" -- "$vision_dir/.venv/bin/python" -m pip install --only-binary=:all: -r "$vision_dir/requirements.txt"
+runuser -u "$operator" -- "$vision_dir/.venv/bin/python" -m pip install \
+    --no-index --find-links "$wheel_dir" --only-binary=:all: -r "$vision_dir/requirements.txt"
 runuser -u "$operator" -- "$vision_dir/.venv/bin/python" -m pip check
 runuser -u "$operator" -- "$vision_dir/.venv/bin/python" -c 'import cv2; cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50)); print("OpenCV ArUco ready:", cv2.__version__)'
 

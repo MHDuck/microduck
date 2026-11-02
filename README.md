@@ -127,6 +127,7 @@ bash scripts/provision-board.sh \
 脚本完成本地构建、签名打包、板端环境初始化及重启等待、`servo-web` 安装、当前 `robotd` / `mediad` / `padd` / ONNX / 控制脚本 / 配置同步与校验，以及板端语音依赖、音频库和模型检查。已有安装会先备份二进制、模型、脚本和配置到板端 `~/microduck-deploy-backups/before-provision.*/runtime.tar.gz`，再更新；不再需要补跑下一节的命令。`--pause-btd-on-pair` 在手柄配对期间暂停 `btd`；`--name Ducky` 设置机器人名称。
 
 首次安装同时准备 NPU 环境、视觉模块的独立 OpenCV 环境和相机追加 180° 修正（保留零拷贝）。`vision-follow.service` 随系统启动，部署完成后打开 `http://板子IP:8091/`，即可使用 ArUco 识别、注视和前后跟随；网页也可切换 MicroDuck 模型检测，新安装的配置默认开启鸭子检测，NPU 不可用时尝试 CPU 模型。机器人动作仍需人工起身、设置基准并启动，具体操作见[视觉部署与操作测试](docs/视觉功能_全新WSL与板端部署.md)。重跑部署会保留已有相机方向配置和视觉内参。
+视觉依赖按板端 Python 版本在电脑端下载、自动重试并缓存，随部署包上传后离线安装。中断后重新运行同一条部署命令即可，无需登录板子手动补装。
 
 **会覆盖板端 `/etc/robot/robotd.toml` 并重启 robotd**，板端调好的参数应先同步回仓库。部署使用当前检出的源码与 `policies/` 模型，不自动拉取 Git 或训练新模型。语音安装验证成功后才切换 `~/microduck-speech/current`，默认仍为 `--speech off`；部署不会录音或发起运动测试。语音使用见 [speech/README.md](speech/README.md)。
 
