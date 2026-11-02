@@ -1,247 +1,42 @@
-# 视觉功能：全新 WSL 与板端部署
+# 视觉模块部署与操作测试
 
-适用分支：**dzh_voice**。硬件为 Radxa ZERO 3W / RK3566、HD1910 舵机、BNO085，
-CSI 摄像头按 IMX219 / Raspberry Pi Camera V2 接线。系统按本项目适配的 Armbian ARM64 镜像部署，
-构建目标库来自 Debian 13 Trixie；不直接套用任意系统或 USB 摄像头。
+默认 **WSL、项目仓库和板端主程序均已准备好**，
+robotd / mediad 能正常运行，摄像头能出图，机器人已校准并能站立、前后行走。
+本文只安装新增的独立视觉模块，不重复安装 WSL、编译整套 Rust 工程或重刷板子。
+主程序尚未部署时，先按[仓库部署说明](../README.md#4-编译与部署)完成基础环境。
 
-## 1. 组件和端口
+新刷 Armbian 的板子使用 `scripts/provision-board.sh` 一键部署时，已自动安装本模块、独立 OpenCV 环境及相机方向修正，并启用 `vision-follow.service` 开机启动。部署后先退出键盘、语音等控制客户端，在板端执行 `sudo systemctl stop padd`，用 `sudo /opt/robot/daemon/current/bin/robotctl health` 确认状态，再打开 `http://板子IP:8091/`，从第 3 节开始操作，无需重复第 1、2 节。相机方向配置已有时保留原值。
+使用下文手动同步、启动或带内参的启动命令前，先在板端执行 `sudo systemctl stop vision-follow`，避免占用 8091；仅手动安装、没有此服务时跳过。结束手动运行后，可用 `sudo systemctl start vision-follow` 恢复默认服务。
 
-| 组件 | 板端位置 / 端口 | 用途 |
-| --- | --- | --- |
-| robotd | /opt/robot/daemon/current/bin/robotd | 策略、电机、IMU、原有安全控制 |
-| mediad | 同目录 bin/mediad；8080 控制台、8443 WebRTC 信令 | 唯一摄像头采集入口、视频和控制转发 |
-| 独立视觉模块 | ~/microduck-vision；HTTP 8091 | 网页、OpenCV ArUco JPEG 检测 |
-| servo-web | HTTP 8081 | 校准，启动后停止控制服务并占用串口 |
-| 配置 / 策略 | /etc/robot/robotd.toml；/opt/robot/daemon/current/policies | 本机参数及 61D 输入 / 14D 输出 ONNX |
+两个测试功能：
 
-浏览器复用 mediad 视频，上传选中的原始视频 JPEG 给独立检测服务，通过现有控制接口发运动。
-Python 不另开摄像头、不直接写舵机。语音不是视觉依赖，独立安装维护。
-默认仅预览，人工起身、启动控制后才动作；**控制浏览器保持前台**。
-视觉与键盘、语音、手柄、8080 控制台择一发送控制，不能同时运行多个控制者。
+- **原地注视**：检测 ArUco 后转头看目标，机身不前后走。
+- **行走跟踪（重点）**：先设置希望保持的距离，再按“停下来识别 → 行走一段 → 停下来重新识别”的方式前后跟踪。
 
-## 2. Windows 安装 WSL
+## 1. WSL：同步新增视觉模块
 
-管理员 PowerShell 执行；已有 Ubuntu 24.04 时直接打开，不注销或覆盖已有环境：
-
-```powershell
-wsl --install -d Ubuntu-24.04
-```
-
-按提示重启、创建 Linux 用户。此后的电脑命令全部在 **WSL Ubuntu 的 Bash** 执行。
-
-## 3. WSL 准备源码和构建环境
-
-### 3.1 软件包
-
-```bash
-sudo apt update
-sudo apt install -y software-properties-common
-sudo add-apt-repository -y universe
-sudo apt update
-sudo apt install -y \
-  git curl ca-certificates openssh-client \
-  build-essential pkg-config cmake binutils \
-  gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross \
-  python3 python3-venv python3-pip libudev-dev libdbus-1-dev libssl-dev \
-  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev \
-  nodejs npm bash coreutils findutils grep sed gawk tar gzip xz-utils zstd unzip file
-mkdir -p "$HOME/src"
-```
-
-### 3.2 导入本次未推送的源码
-
-本批修改只在本地提交，**直接克隆远程暂时取不到这些提交**。
-同一 Windows 电脑的新 WSL 从现有仓库克隆为独立 Linux 工作副本，不复制 Windows venv/target：
-
-```bash
-SOURCE_REPO=/mnt/f/Code/microduck_code/microduck_rust
-git -C "$SOURCE_REPO" branch --show-current
-git -C "$SOURCE_REPO" log -6 --oneline
-git clone --no-hardlinks --branch dzh_voice "$SOURCE_REPO" "$HOME/src/microduck_rust"
-cd "$HOME/src/microduck_rust"
-git remote set-url origin https://gitee.com/moheng_robot/microduck_rust.git
-git branch --show-current
-git log -6 --oneline
-git status --short
-```
-
-源路径不同则修改 SOURCE_REPO；目标目录必须尚不存在。确认分支为 dzh_voice、提交与源仓库相同。
-另一台电脑可在源仓库执行 `git bundle create dzh_voice-vision.bundle dzh_voice`，复制 bundle，
-以 `git clone --branch dzh_voice /实际路径/dzh_voice-vision.bundle "$HOME/src/microduck_rust"`
-代替 clone，再设置同一 origin。bundle 不推送，保留已有 Git 历史。
-
-只有本批提交以后已发布到远程，才可改用
-`git clone --branch dzh_voice https://gitee.com/moheng_robot/microduck_rust.git "$HOME/src/microduck_rust"`。
-部署不需要修改 master，也不要整目录覆盖旧代码。
-
-### 3.3 Rust / Zig / ARM64 目标库
-
-```bash
-cd "$HOME/src/microduck_rust"
-bash setup-build.sh
-source "$HOME/.cargo/env"
-rustup target add aarch64-unknown-linux-gnu
-cargo fetch --locked
-DUCK_DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian \
-  sh scripts/cross-sysroot.sh
-export PKG_CONFIG_SYSROOT_DIR="$PWD/deploy/sysroot"
-export PKG_CONFIG_LIBDIR="$PKG_CONFIG_SYSROOT_DIR/usr/lib/aarch64-linux-gnu/pkgconfig:$PKG_CONFIG_SYSROOT_DIR/usr/share/pkgconfig"
-export PKG_CONFIG_ALLOW_CROSS=1
-export RUSTFLAGS="-L $PKG_CONFIG_SYSROOT_DIR/usr/lib/aarch64-linux-gnu"
-```
-
-setup-build.sh 准备 Rust、独立 duck-build 环境内的 cargo-zigbuild 和 ziglang 0.14.1。
-sysroot 只下载并解包目标库，不安装到 WSL 系统；WSL 同名库不能代替 ARM64 库。
-换终端时重新 source cargo 并执行四条 export；构建路径不要含空格。首次构建需要网络，不先用 --offline。
-
-## 4. 新板子：系统、SSH、模型
-
-将本项目验证的 **Armbian 26.8.1 精简版 ARM64 镜像**写入 TF 卡，首次启动设置 radxa 用户、密码、
-Wi-Fi 和 sudo。硬件/镜像要求见[仓库 README](../README.md#2-硬件与接口)，不额外套用其他板版的 DTB/B1 引导替换。
-检查供电、摄像头排线、IMU 接线、舵机 ID。刷板子不重置舵机 EEPROM；
-新机器人或重新装配仍需校准。安装、校准期间托住机器人，暂不启动运动。
-
-WSL 设置实际板端地址，后面的 WSL 命令沿用 BOARD：
+在现有仓库根目录执行，板子 IP 按实际修改：
 
 ```bash
 export BOARD=radxa@192.168.2.70
-ssh "$BOARD"
-```
-
-核对主机指纹、完成登录后 exit 回 WSL，再配置 SSH 公钥，供初始化脚本重启后自动连接：
-
-```bash
-test -f "$HOME/.ssh/id_ed25519.pub" || ssh-keygen -t ed25519
-ssh-copy-id "$BOARD"
-ssh -o BatchMode=yes "$BOARD" 'id; uname -m; cat /etc/os-release'
-```
-
-应为 aarch64，用户能 sudo。重刷后如主机指纹冲突，核对确实是该板子，再 `ssh-keygen -R 真实IP`。
-初始化可能重启或改变 DHCP 地址；变化后更新 BOARD。
-
-WSL 检查配置引用的模型是否存在：
-
-```bash
-cd "$HOME/src/microduck_rust"
-python3 - <<'PY'
-from pathlib import Path
-import tomllib
-cfg = tomllib.loads(Path("deploy/robotd.toml").read_text())
-missing = []
-for key in ("walk", "stand", "sitstand", "ground_pick", "kick_left", "kick_right", "roulade"):
-    value = cfg["policy"].get(key, "none")
-    if value == "none":
-        continue
-    local = Path("policies") / Path(value).name
-    print(key, local, "OK" if local.is_file() else "MISSING")
-    if not local.is_file():
-        missing.append(str(local))
-if missing:
-    raise SystemExit("先补齐模型：" + ", ".join(missing))
-PY
-```
-
-核对 deploy/robotd.toml 的 open_microduck 平台、HD1910 串口、BNO085 总线/地址/安装方向、
-[media].camera=true 及策略。模型名称不能互相自动替代；嘴部不进入 14D 策略输出。
-
-## 5. WSL：初始化全套系统服务
-
-保持第 3 节构建环境，在仓库根目录执行：
-
-```bash
-bash scripts/provision-board.sh --no-ble --pause-btd-on-pair --name Ducky "$BOARD"
-```
-
-从当前代码构建/签名完整运行时，配置板端系统依赖、摄像头 overlay、GStreamer、RKAIQ、
-ONNX Runtime、系统服务、servo-web，等待重启并输出健康状态。
---no-ble 只跳过电脑通过蓝牙重新寻找板子的步骤，适用于无蓝牙的 WSL。
-签名私钥留在仓库外，不放进源码。
-
-**全新板子必须先初始化，不能只 xh_push。**
-若板端已有 current 发布目录，此入口只刷新环境，不替换整套运行时；
-整体更新使用 `sh scripts/dev-push.sh "$BOARD"`，再执行下一节配置/模型同步。
-robotd、mediad、robotctl 应来自同一代码版本。
-
-## 6. WSL：编译并同步配置、模型、控制脚本
-
-```bash
-cd "$HOME/src/microduck_rust"
-bash build.sh -p robotd -p robotctl -p mediad
-sh xh_push.sh "$BOARD"
-```
-
-产物在 target/native/aarch64-unknown-linux-gnu/release。
-xh_push 上传 robotd、policies/*.onnx、robotd.toml 和键盘/诊断脚本，校验并重启 robotd。
-**它不更新 mediad / robotctl**；本次新板子已由第 5 节的完整运行时安装它们。
-以后只改 mediad，按[方向修正文档](相机方向修正_180度.md)单独替换，不能只 xh_push。
-
-xh_push 会覆盖 /etc/robot/robotd.toml；板端调试参数先备份合回本地配置。
-只改独立视觉 Python/网页则用第 9 节 push，不重新编译 Rust。
-
-## 7. 板端：校准与主程序验收
-
-以下在 SSH 板端终端执行：
-
-```bash
-sudo systemctl restart servo-web
-```
-
-打开 http://板子IP:8081/，按[校准说明](../校准.md)核对舵机 ID、方向、基准姿态与零点。
-servo-web 会停 padd、mediad、robotd、tofd；不能同时跑键盘或视觉运动。
-
-完成后退出校准页，托住机器人，交回设备：
-
-```bash
-sudo systemctl stop servo-web
-sudo systemctl restart robotd mediad tofd
-sudo systemctl stop padd
-sudo /opt/robot/daemon/current/bin/robotctl health
-sudo systemctl status robotd mediad --no-pager -l
-sudo ss -lntp '( sport = :8080 or sport = :8443 )'
-sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py --speech off
-```
-
-健康应 bus ok、IMU ready、循环约 50Hz；累计 stale 可含单次重复，不能忽略持续过期/总线错误。
-configure 报未知 mounting 等字段时核对二进制版本，不靠删除硬件配置掩盖混用。
-人工 Enter 起身，确认站立、停车、前后走与头部控制正常。视觉依赖模型能响应头部指令。
-
-退出键盘前托住（Esc 沿原流程可能卸力/停止 robotd），再
-`sudo systemctl restart robotd mediad`。先在 http://板子IP:8080/ 只连视频观察至少 30 秒，
-确认流畅后关闭该视频连接。演示期间不再同时运行键盘、语音、手柄控制。
-
-## 8. 板端：倒装相机追加 180°
-
-当前图像相对原显示上下颠倒，在已安装新版 mediad 的板端配置：
-
-```bash
-sudo mkdir -p /etc/systemd/system/mediad.service.d
-sudo tee /etc/systemd/system/mediad.service.d/20-camera-orientation.conf >/dev/null <<'EOF'
-[Service]
-Environment=DUCK_CAMERA_ROTATE_OFFSET=180
-Environment=DUCK_CAMERA_ROTATE_PIXELS=false
-EOF
-sudo systemctl daemon-reload
-sudo systemctl restart mediad
-sudo journalctl -u mediad -n 30 --no-pager
-```
-
-默认 --rotate=90，追加 180 得到 270；以实际启动日志为准。
-false 保留零拷贝，统一通过 media.video.rotate 修正网页与检测坐标，**原始编码像素不旋转**；
-8080、8091 显示都应转正。其他视频消费者也须应用该元数据。
-若要求编码像素本身正向，可设 true，但会增加负载，须验证帧率/温度并重标定相机。
-详见[方向模式、构建与回退](相机方向修正_180度.md)。网页不要额外叠加旋转。
-
-## 9. 独立视觉模块：上传、安装、启动
-
-WSL：
-
-```bash
-cd "$HOME/src/microduck_rust"
+git branch --show-current
 sh vision_follow/push.sh "$BOARD"
 ```
 
-只同步到 ~/microduck-vision，不覆盖主配置/策略，不重启服务，保留板端 venv 和内参。
-板端，radxa 用户执行，不用 sudo 安装 Python 包：
+确认当前分支已包含视觉功能。
+
+此脚本只把视觉模块同步到板端 ~/microduck-vision，不覆盖 robotd 配置、运动模型、板端虚拟环境或内参，
+不重启主程序。**仅更新此模块不需要运行 xh_push.sh，也不需要重新编译 Rust。**
+
+如板端已有旧 serve.py，先在它所在的终端 Ctrl-C 退出，再同步、重启。
+相机倒装的统一方向修正属于 mediad 功能；尚未安装时另见[相机方向修正](相机方向修正_180度.md)，
+只同步视觉网页不会更新 mediad。
+
+## 2. 板端：安装并启动
+
+### 2.1 首次安装独立环境
+
+SSH 登录板子，以 radxa 用户执行：
 
 ```bash
 sudo apt update
@@ -251,67 +46,228 @@ python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install --only-binary=:all: -r requirements.txt
 .venv/bin/python -c 'import cv2; print(cv2.__version__); print(hasattr(cv2, "aruco"))'
+```
+
+预期输出 4.12.0、True。使用视觉自己的 .venv，不复用语音或训练环境。
+后续只更新源码时不用重复创建环境；依赖有变化才重新安装 requirements.txt。
+
+### 2.2 每次启动
+
+先退出键盘控制、语音动作程序以及其他发送控制的网页。板端停止手柄输入，检查主服务：
+
+```bash
+sudo systemctl stop padd
+sudo systemctl status robotd mediad --no-pager -l
+sudo /opt/robot/daemon/current/bin/robotctl health
+```
+
+robotd / mediad 应处于运行状态，IMU ready、总线正常；本模块复用现有主服务。
+然后在板端启动视觉服务器，**保持该终端运行**：
+
+```bash
+cd "$HOME/microduck-vision"
 .venv/bin/python serve.py --detector aruco --marker-id 0 --marker-mm 50
 ```
 
-预期 4.12.0、True。不要复用 speech/.venv 或训练环境；缺 wheel 可增加
---index-url https://pypi.org/simple，不替换系统 Python。
-保持终端运行，Ctrl-C 停止。浏览器打开 **http://板子IP:8091/**，点击“连接摄像头”。
-HTTP 8091、8080 和信令 8443 可达，同时需 WebRTC 视频/数据通道网络可达。
+出现监听提示后，在电脑 Chrome / Edge 打开 **http://192.168.2.70:8091/**，IP 换成实际板子地址。
+更新后使用 Ctrl-F5 刷新，重新连接；不要继续使用旧网页。
+8091 是新增模块，视频和控制仍依赖 mediad 的 8443 信令及 WebRTC 链路。
 
-| 参数 | 默认 | 用途 |
-| --- | --- | --- |
-| --aruco-hz | 0.5 | 检测频率上限，允许 0.1～5，实际还取决于耗时 |
-| --aruco-max-side / --aruco-jpeg-quality | 640 / 0.7 | JPEG 最长边与质量 |
-| --detection-max-age / --aruco-http-timeout | 5 / 8 秒 | 新解码帧到结果预算 / HTTP 等待 |
-| --target-timeout / --video-timeout | 12 / 10 秒 | 目标保留 / 无新画面期限 |
-| --follow-style | step | 停步识别再移动 |
-| --follow-step-seconds / --follow-settle-seconds | 2.5 / 1 秒 | 每段行走含起步 / 停步稳定等待 |
-| --follow-require-front | 默认关闭 | 可选要求目标和头部朝前才走 |
+## 3. 两个功能共用：连接、识别、起身
 
-CLI 检查目标保留时间能覆盖两帧确认及移动窗口；完整参数见 serve.py --help。
-长检测预算不延长独立 IMU 健康确认和控制连接的期限。
+### 3.1 准备目标
 
-## 10. 打印及分阶段实机测试
+使用随模块提供的 [aruco_5x5_50_id0_50mm.svg](../vision_follow/aruco_5x5_50_id0_50mm.svg)：
 
-使用 aruco_5x5_50_id0_50mm.svg：**DICT_5X5_50、ID0、黑色正方形外边 50mm**。
-按 100% 打印并实测；整张 SVG 含白边为 70mm，不能把 70 填入 marker-mm。
-贴硬平面，避免反光，只放一个 ID0。
+- 字典 **DICT_5X5_50**，ID **0**。
+- 黑色正方形外边长 **50mm**，SVG 含白边整图为 70mm；按 100% 打印并实测黑色外边。
+- 将纸贴在平板上，避免反光，只放一个 ID0。保持码完整入镜，白边不要被手挡住。
 
-| 阶段 | 操作 | 应看到的效果 |
-| --- | --- | --- |
-| 纯视频 | 连接后不识别、不使能，观察 30 秒 | 正向、持续更新、无运动 |
-| 识别预览 | 勾“仅预览时启用 ArUco 识别”，左右移动码 | ID0 框贴合、日志有耗时、无使能动作 |
-| 人工起身 | 检查状态，点“起身使能” | 先入队、再由策略确认开始，最后站稳 |
-| 原地注视 | 选“原地转头注视”，点“启动注视” | 两帧确认后头部左右跟踪，平移为 0；可选上下看 |
-| 设置相对距离 | 停止，期望位置两帧识别稳定后点“将当前距离设为跟随距离” | 保存当前框大小作距离基准 |
-| 停走跟随 | 选“转头＋前后跟随”、停走式、图像相对大小，启动后移动码 | 变小前进、变大后退、接近基准停；每段后停稳再识别 |
-| 停止 | “停止控制”或空格 / Esc | 清零速度，不卸力、不自动回正头 |
-| 故障 | 移出码、断连、切后台 | 按对应期限停步，恢复后需人工再启动 |
+### 3.2 连接并验证识别
 
-预览勾选只是非控制时识别偏好，**不勾选也能启动注视/跟随**，控制中取消勾选不会停止运动。
-看“识别状态”确认实际状态；停止按钮结束控制。页面后台、状态过期、真实视频冻结、总线/IMU 故障
-仍停止，不用慢检测参数绕过。
+1. 点击左上角 **“连接摄像头”**。
+2. 先不使能、不启动动作，观察视频约 15 秒，应正向且持续更新。
+3. **“检测目标”**选择 **“ArUco · DICT_5X5_50”**，**“追踪 ArUco ID”**填 **0**。
+4. 勾选 **“仅预览时启用 ArUco 识别（不控制机器人）”**。
+5. 将码放在画面中部，保持不动，等连续识别到两帧。默认上限 0.5Hz，通常需要数秒；
+   板端处理慢时等更久，不要只看到一次框就立刻设置基准。
+6. 确认画面有 ID0 和贴合的框，运行记录出现检测耗时；此时不应因识别自动使能或运动。
 
-起身 accepted 只代表入队；3 秒未看到开始应查 robotd 拒绝日志，不连点或自动改成普通 enable。
-倒地起身仍走原 StandUp 恢复和过流保护。注视/跟随必须恢复完成、stand/walk 策略、mode=walk。
-头部指令最终由策略执行，目标变化但关节不动时检查模型跟踪能力，不直接加大输出。
+后面需要在未控制时设置距离基准，**建议保持识别预览勾选**。
+它不是动作开关：控制启动后即使不勾选也会识别；取消勾选不会停止正在运行的注视/跟随。
+结束动作请点击“停止控制 [空格]”。
 
-停走每轮：零速 accepted 应答 → 稳定 1 秒 → 新画面两帧 → 移动最多 2.5 秒 → 再停。
-前进上限 0.12m/s、后退 0.10m/s，加速度 0.3m/s²，前进约 0.4 秒到上限。
-默认不因目标/头部偏侧阻止停走式平移，可勾选恢复此限制。
-移动中不上传、旧图不触发下一段。不自动转身、横移或避障，先空旷地面托护测试。
-时间包含起步且只是上限，距离死区/结果失效/保护可提前停步；指令不代表实测位移。
+### 3.3 人工起身
 
-## 11. 米制距离和相机标定（可选）
+1. 点击 **“检查机器人状态（只读）”**，确认 IMU、总线和状态正常。
+2. 机器人尚未站稳时，托护好机器人，点击一次 **“起身使能”**，等待实际起身结束、双脚站稳。
+   已经正常使能站稳则不用重复起身。
+3. 区分“起身请求已入队”和“robotd 已开始起身”；入队不代表动作已完成。
+4. 等到起身恢复结束，再执行下面的注视/跟随。若提示保护、IMU 或总线故障，先处理日志原因。
 
-注视、相对大小不需要内参。米制模式需要**这台相机、相同原始分辨率/裁切/像素方向**的 pinhole/raw
-内参与实测码边长，不能套用别的摄像头或猜焦距。
+页面不自动从起身切入视觉动作；必须人工点启动。
 
-1. 打印 chessboard_9x6_20mm.svg，9×6 内角点、格长 20mm，整图 240×180mm；实测格长。
-2. 网页“保存原始标定照片”，采 20～30 张清晰完整棋盘，覆盖四角、不同倾角和距离。
-   这是原始编码像素，倒着看也不手工旋转。JPG 放进板端 ~/microduck-vision/calibration-images/。
-3. 停旧 serve.py，在板端执行（实际格长变化时修改参数）：
+## 4. 功能一：原地转头注视
+
+### 4.1 点击顺序
+
+1. 完成第 3 节，机器人已站稳、识别到 ID0。
+2. 在 **“控制方式”**下拉框选择 **“原地转头注视（默认）”**。
+3. 第一次先不勾选 **“同时上下看（默认只左右看）”**，只测试左右注视。
+4. 点击 **“启动注视”**。
+5. 将码缓慢向机器人左侧移动，停住等识别；再向右侧移动并停住。
+   不要快速晃动或一次移出画面。
+6. 头部应随目标左右转动，机身前后速度为 0，不应开始行走。
+7. 要测试上下看，先点 **“停止控制 [空格]”**，勾选 **“同时上下看”**，
+   再点 **“启动注视”**，缓慢上下移动码。
+8. 测完点击 **“停止控制 [空格]”**。
+
+头部偏转有范围限制，码偏得过大时不会无限转头。停止不卸力、不自动回正头。
+若方向相反，先停止，展开 **“高级参数与方向校正”**，修改对应的
+**“反转左右纠偏方向”** / **“反转上下纠偏方向”**，再启动验证。
+
+### 4.2 通过标准
+
+- 码移动后，头部能朝目标转动；慢识别时允许延迟，不要求每个视频帧都转头。
+- 原地注视不下发行走速度。
+- 停止后不继续主动跟踪；预览仍勾选时可以继续画框，这不代表动作仍在运行。
+
+## 5. 功能二：行走跟踪——先设置跟踪标准，再启动
+
+下面使用 **图像相对大小**。第 2 节启动命令没有载入相机内参，所以不要选择米制模式。
+此方式保存的是“希望保持的位置上，码在图像里的大小”，不是输入一个真实米数。
+
+**首次操作顺序：停止控制 → 选择跟随模式/参数 → 摆好码 → 等两帧 → 设置基准 → 启动前后跟随。**
+
+### 5.1 先停控并选择模式、参数
+
+1. 如果刚做过注视，点击 **“停止控制 [空格]”**。
+2. 保持机器人站稳。若头还明显朝侧面，可先用原地注视让目标引导头部回到接近正前方，再停止。
+3. **“控制方式”**选择 **“转头＋前后跟随”**。
+4. **“行走跟随方式”**选择 **“停走式（ArUco）”**。
+5. **“跟随依据”**选择 **“图像相对大小”**。
+6. 核对以下参数，第一次用这些默认值：
+
+| 网页字段 | 设置 |
+| --- | --- |
+| 每段行走时间 s（含起步） | 2.5 |
+| 停步稳定等待 s | 1 |
+| 前进上限 m/s | 0.12 |
+| 后退上限 m/s | 0.10 |
+| 同时上下看（默认只左右看） | 首次不勾选 |
+| 高级参数中的“停走式仅在目标位于正前方时行走（默认关闭）” | 首次不勾选 |
+
+7. 保持 **“仅预览时启用 ArUco 识别（不控制机器人）”**勾选。
+   若没有勾选，现在勾选，再等新识别结果。
+
+**先完成这些选择，再设置基准。** 修改检测目标、ID 或跟随依据会清除之前的基准；
+修改控制参数会先停止控制，不能边修改边期待机器人继续走。
+
+### 5.2 设置“希望机器人保持的位置”
+
+1. 将码放到**机器人正前方、希望之后保持的距离**。
+   例如先选一个码能稳定识别、不会贴近机器人、前后有活动空间的位置；
+   这是手动摆放的基准，不需要在网页填写实际多少米。
+2. 码面尽量正对相机，保持高度、倾角不变，整块码和白边完整可见。
+   测试过程中也尽量保持相同朝向，避免把倾斜造成的变小误当成远离。
+3. 手持码停住数秒，等 ID0 连续识别至少两帧。
+   仅在预览阶段设置即可，不需要先启动行走。
+4. 点击 **“将当前距离设为跟随距离”**。
+5. 在 **“运行记录”**中确认出现 **“已设定跟随目标”**，其中 **basis 为 size**、value 为一个数值。
+   同时 **“期望目标尺寸 / 画面高度”**会更新，例如 0.100。
+6. **保持这个值，不要为了让机器人走而随手修改它。** 它表示目标相对图像的尺寸，
+   不是 0.100 米，也不是速度。ArUco 使用码的平均边长相对画面高度计算尺寸。
+7. 若显示 **“标定失败”** / **“请先让完整目标稳定出现两帧，再标定距离”**，
+   不要启动跟随：把码完整放回画面，保持识别预览开启、等两帧，再点该按钮。
+   如果按钮灰色，检查是否仍在控制中；先停止，且保持相机已连接。
+
+此处“设置距离基准”不是相机内参标定，不需要棋盘。成功后再开始下一个步骤。
+
+### 5.3 启动后，先验证基准位置应停车
+
+1. 设置成功后，码仍保持在刚才的位置，不要立刻挪动。
+2. 点击 **“启动前后跟随”**。选择跟随模式后，原来的“启动注视”按钮会变成这个名称。
+3. 机器人先发送零速度、等稳定、重新取新画面确认；通常要等待几秒。
+4. 因为码仍在基准位置，机器人应保持不前后走，状态可显示 **“距离合适，停止”**。
+   头部仍可左右注视。
+5. 这一步不走是正确结果，表示希望保持的位置已建立，不是启动失败。
+
+若提示“请先把码放在期望位置并点击……”，表示当前页面的基准未设置或已被清除；
+按 5.2 重设，不要反复点启动。
+
+### 5.4 验证前进
+
+1. 保持控制运行，将码沿机器人正前方**向远处移一段**，然后停住。
+   不要同时大幅左右摆动或转动码面。
+2. 码在画面中变小，等新的识别结果确认。
+   默认有约 ±15% 的尺寸容差，微小移动可能仍属于“距离合适”；
+   例如基准 0.100，从静止触发前进通常需滤波后的尺寸小于约 0.085。
+   这是图像尺寸比例，不等于实际距离变化 15%。
+3. 查看运行记录，应出现 **“停走跟随：执行短程移动”**，控制阶段为 **moving**，
+   原因类似 **“短程前进，到时停步”**，vx 起步后为正。
+4. 机器人应向前走一段，而不只是等待识别。每段默认最多 **2.5 秒**，包含加速起步；
+   约 0.4 秒达到默认前进速度，具体位移取决于模型、地面及保护是否提前停止。
+5. 到时应先 **stopping → settling → detecting**：停步、稳定约 1 秒，再识别新画面。
+6. 若新识别仍表明码太远，可再走下一段；回到基准尺寸附近就停住。
+   测试者把码移远一次后先保持不动，让机器人自己接近，不必一直往后退。
+
+### 5.5 验证后退
+
+1. 先等待上一段前进完成，机器人停稳。
+2. 将码沿正前方**向机器人靠近一段**并停住，保持完整入镜，不遮挡相机。
+3. 码明显变大，等两帧确认。基准为 0.100 时，从静止触发后退通常需滤波后尺寸大于约 0.115。
+4. 应出现 **“短程后退，到时停步”**，vx 为负，机器人向后走一段，再停稳识别。
+5. 把码恢复到希望保持的相对大小附近，机器人应保持停车。
+6. 不要把码突然贴近相机；码被裁切或目标无效会停步，不会用这种情况触发后退。
+
+### 5.6 修改基准、重新连接与停止
+
+- **改变希望保持的距离**：先点停止，在新期望位置摆好码，等两帧，重新点
+  **“将当前距离设为跟随距离”**，确认成功，再点 **“启动前后跟随”**。
+- **刷新页面 / 断开重连**：相对大小基准不会永久保存，需要重新设置；不要直接沿用上次记忆。
+- **修改速度、每段时间等参数**：程序会先停控，修改后重新点启动；
+  若同时改了目标、ID 或跟随依据，还要重新设基准。
+- **停止运动**：点 **“停止控制 [空格]”**，或让控制页面获得焦点后按空格 / Esc。
+  取消识别预览勾选不是停车操作。
+- **查看问题**：点击 **“下载演示日志”**，刷新页面前保存 JSONL。
+
+### 5.7 行走跟踪通过标准
+
+1. 基准位置不乱走；码变小能前进、变大能后退，接近基准大小能停。
+2. 可以看到清晰的“识别等待 → 行走一段 → 停稳 → 再识别”循环。
+3. 不用每走一步都重新设置基准；只有希望保持的距离改变或页面重新连接等情况才重设。
+4. 停止按钮能结束控制；丢码、画面/状态过期或硬件故障时按对应保护停步。
+
+此模块只做前后行走，不自动转身、横移或避障。默认不因头/目标偏侧阻止停走式移动，
+仍建议第一次让码始终位于机身前方，在空旷场地托护测试。
+移动时不上传新检测帧，所以**码移动后不会保证立即刹车或立即换向**；
+先完成当前限时段，再停步识别。需要立刻停止时使用停止按钮。
+
+## 6. 常见操作问题
+
+| 现象 | 操作 |
+| --- | --- |
+| 能识别，但点设置基准失败 | 停止控制、勾识别预览，完整 ID0 保持两帧，再点设置 |
+| 点启动却不走 | 基准位置本来就该停；先把码明显移远/移近，等新结果，查看原因 |
+| 未设基准而被拒绝 | 按 5.2 设置成功，看到“已设定跟随目标”后再启动 |
+| 刚走完不立即继续 | 正在停稳/等新帧/两帧确认，默认 0.5Hz 需要数秒；保持码不动等待 |
+| 每次只晃一下 | 核对“每段行走时间”为 2.5；确认新服务已重启，查看 moving 时长、vx 和停止原因 |
+| 画框继续但动作停了 | 预览与控制独立，检查“识别状态”和运行记录，不用框判断控制是否运行 |
+| 头不动 | 看 head 目标与关节反馈，确认策略支持头部指令；不要用增大网页角度绕过 |
+| 相机/IMU/总线报错 | 查看只读健康与主程序日志，先处理故障；不通过放宽检测周期绕过 |
+| 图片上下颠倒 | 按[方向修正文档](相机方向修正_180度.md)处理 mediad，再刷新重连 |
+
+诊断命令在板端执行：
+
+```bash
+sudo /opt/robot/daemon/current/bin/robotctl health
+sudo journalctl -u robotd -u mediad --since '-3 minutes' --no-pager
+```
+
+## 7. 可选：米制距离
+
+以上两个功能均不需要相机内参。只有要按真实米数控制时，才执行
+[ArUco 测距与内参标定说明](ArUco_DICT_5X5_50_部署与测距.md)，准备同一原始视频的 camera.json：
 
 ```bash
 cd "$HOME/microduck-vision"
@@ -320,87 +276,26 @@ cd "$HOME/microduck-vision"
 .venv/bin/python serve.py --detector aruco --marker-id 0 --marker-mm 50 --calibration camera.json
 ```
 
-至少 12 张有效照片，RMS>2px 拒绝；成功仍要用尺子验证多个距离。
-显示为**相机光心到码中心**，不是机身/脚底安全间隔。
-确认后选网页米制模式、设置目标距离（默认 0.60m），再跟随。
-码太小、裁切、重投影异常或分辨率比例不匹配时 pose 无效停平移，不自动回退大小模式。
-更换相机/裁切/实际像素旋转后重新标定；只改方向元数据且 raw 像素未变时可保留同一内参。
+calibration-images 放入网页“保存原始标定照片”采集的棋盘 JPG；
+使用 9×6 内角点、20mm 格长棋盘，建议 20～30 张、至少 12 张有效，覆盖位置和倾角，
+不手工旋转 raw 照片。实测格长不同就修改 square-mm。
+相机/裁切/实际像素方向变化后重新标定。
 
-## 12. 更新、恢复键盘和回退
+载入内参后，先停止控制，将“跟随依据”选为 **“相机到码的距离（米，需标定）”**，
+在 **“期望距离 m”**填写希望保持的米数，例如 0.60，再点 **“启动前后跟随”**。
+此时以米数为准，不使用上面的相对大小基准；也可在有效米制检测下用“将当前距离设为跟随距离”记录当前距离。
+先拿尺子验证距离，显示的是相机光心到码中心；没有有效 pose 时停平移，不自动降级成大小跟随。
 
-| 改动 | WSL 操作 | 板端操作 |
-| --- | --- | --- |
-| 仅 vision_follow | sh vision_follow/push.sh "$BOARD" | Ctrl-C 旧服务，更新后重启原命令；网页 Ctrl-F5 重连 |
-| robotd Rust | bash build.sh；sh xh_push.sh "$BOARD" | 脚本重启 robotd，退出旧控制器后重连 |
-| 配置 / 模型 | sh xh_push.sh "$BOARD"（需已有 robotd 产物） | 核对配置，脚本重启 robotd |
-| mediad Rust | 按方向文档编译/替换 mediad | 重启 mediad、重新连视频 |
-| 完整运行时 | sh scripts/dev-push.sh "$BOARD"，随后 xh_push 配置/模型 | 核对全部 daemon/robotctl 版本一致 |
+## 8. 更新与恢复键盘
 
-恢复键盘：网页停控并断开，Ctrl-C 退出视觉服务器，板端：
+只更新视觉模块：WSL 再运行 `sh vision_follow/push.sh "$BOARD"`；
+板端退出旧 serve.py、重新执行第 2.2 节启动命令，网页 Ctrl-F5 并重连，再设置跟踪基准。
+
+恢复键盘：网页先停止控制、断开连接，视觉终端 Ctrl-C；板端：
 
 ```bash
 sudo systemctl restart robotd
 sudo python3 /opt/robot/daemon/current/scripts/keyboard-control.py --speech off
 ```
 
-更新前可板端备份 `cp -a "$HOME/microduck-vision" "$HOME/microduck-vision.backup-$(date +%Y%m%d-%H%M%S)"`。
-回退先停控/停旧进程，恢复对应源码并保留 venv/内参。方向改 offset=0、pixels=false 并重启 mediad 即回原方向。
-代码按分类提交逆序 revert，不 reset --hard 覆盖其他工作。
-
-## 13. 排错、日志和电脑端识别
-
-网页“下载演示日志”保存 JSONL，刷新前下载。包含健康年龄/RTT、视频收包/解码/显示帧、
-编码/HTTP/OpenCV/帧龄、控制阶段及关节反馈，不保存视频。
-
-板端：
-
-```bash
-sudo /opt/robot/daemon/current/bin/robotctl health
-sudo systemctl status robotd mediad --no-pager -l
-sudo journalctl -u robotd -u mediad --since '-3 minutes' --no-pager
-v4l2-ctl --list-devices
-for d in /dev/media*; do
-  [ ! -e "$d" ] || sudo media-ctl -d "$d" -p
-done
-```
-
-缺诊断工具时先 `sudo apt install -y v4l-utils`。
-
-| 现象 | 处理方向 |
-| --- | --- |
-| 信令不可达 | mediad active、8443 监听；8091 能打开不代表视频正常 |
-| none has an imx219 entity | 查传感器是否在 media 拓扑；imx219 probe -5 是 I²C 探测失败 |
-| 只有 rkisp/dphy | 断电后查排线/供电/型号与 /boot/armbianEnv.txt overlay，不盲改 ISP 格式 |
-| unknown field stand_up | mediad、robotd 都要对应版本，仅更新网页/robotctl 不够 |
-| 起身没反应 | 区分入队/开始，看 stand-up refused、IMU ready 和总线，不关保护 |
-| imu_fresh=false | 单次重复不等于断流，看 0.5 秒内独立 health、连续 stale 和 bus |
-| 检测慢/超时 | 看分段耗时，先 640/0.5Hz 默认；可把 JPEG 处理移电脑 |
-| 有框头不动 | 查 control_active、policy/mode、head 应答、目标/关节差异、模型 |
-| 只晃一下 | 确认服务重启后为 2.5 秒新默认；看 moving 的 elapsed/requested_vx/peak_vx、提前停止原因 |
-| 画面冻结 | 停控，对比 8080、8091 纯视频，再开识别；看收包/解码/显示计数 |
-| currentTime 走但图不动 | 不是新帧证据；冻结仍停控，“恢复视频播放”不恢复运动 |
-
-板端处理吃紧时，电脑 WSL 独立识别（实际 IP 替换）：
-
-```bash
-cd "$HOME/src/microduck_rust"
-python3 -m venv .venv-vision
-.venv-vision/bin/python -m pip install --only-binary=:all: -r vision_follow/requirements.txt
-.venv-vision/bin/python vision_follow/serve.py \
-  --detector aruco --marker-id 0 --marker-mm 50 --robot-host 192.168.2.70 --bind 127.0.0.1
-```
-
-同机 Windows 浏览器访问 http://localhost:8091/；JPEG 在电脑处理，WebRTC 仍直连板子。
-米制模式仍用板端视频内参，不是电脑摄像头内参；同样需要健康状态及人工控制。
-
-## 14. 开发电脑离线检查
-
-先按上一节创建 .venv-vision：
-
-```bash
-node --test vision_follow/test_core.cjs vision_follow/test_follow_cycle.cjs \
-  vision_follow/test_aruco_client.cjs vision_follow/test_app.cjs
-.venv-vision/bin/python -m unittest discover -s vision_follow -p 'test_*.py'
-```
-
-仅验证逻辑、合成图像和模拟接口，不驱动机器人，不能代替第 10 节实机验收。
+文档只说明新增视觉模块；主程序版本、配置、模型或相机 Rust 代码的更新仍按原部署流程执行。

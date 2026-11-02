@@ -182,7 +182,10 @@ fn main() -> ExitCode {
     let turn = match duck_detect::Turn::from_degrees(orientation.consumer_degrees) {
         Some(turn) => turn,
         None => {
-            tracing::error!(degrees = orientation.consumer_degrees, "mediad cannot start");
+            tracing::error!(
+                degrees = orientation.consumer_degrees,
+                "mediad cannot start"
+            );
             return ExitCode::FAILURE;
         }
     };

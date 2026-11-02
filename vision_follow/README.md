@@ -1,6 +1,6 @@
 # 独立视觉注视与前后跟随
 
-[全新 WSL 与板端部署](../docs/视觉功能_全新WSL与板端部署.md) ·
+[视觉模块部署与操作测试](../docs/视觉功能_全新WSL与板端部署.md) ·
 [日常测试](../docs/视觉注视与跟随_独立模块测试.md) ·
 [ArUco / 测距](../docs/ArUco_DICT_5X5_50_部署与测距.md) ·
 [相机方向](../docs/相机方向修正_180度.md)
@@ -9,6 +9,8 @@
 默认只预览，人工起身/启动控制后才动作；浏览器保持前台，与键盘/语音/手柄择一使用。
 
 ## 已部署主程序后的快速启动
+
+`scripts/provision-board.sh` 一键部署已安装本模块和独立 OpenCV 环境，`vision-follow.service` 开机启动，直接打开 `http://板子IP:8091/` 即可。以下手动同步或启动前，先在板端 `sudo systemctl stop vision-follow`；没有此服务时跳过。退出手动运行后，`sudo systemctl start vision-follow` 恢复默认服务。
 
 WSL 仓库根目录：
 
@@ -49,7 +51,7 @@ python3 "$HOME/microduck-vision/serve.py" --detector duck --follow-style continu
 ## 更新与检查
 
 push.sh 不覆盖主配置/模型、板端 .venv 或内参；先停旧服务，上传后重启、Ctrl-F5 重连。
-stand_up 字段需 mediad、robotd 都支持；默认 xh_push 不更新 mediad。
+stand_up 字段需 mediad、robotd 都支持；master 的 xh_push 会同步 mediad。
 下载 JSONL 日志后再刷新，不保存视频。离线检查需已安装 OpenCV 的 Python 和 Node：
 
 ```bash

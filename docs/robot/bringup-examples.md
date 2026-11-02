@@ -12,8 +12,7 @@ zig is not installed: `aarch64-linux-gnu-gcc` as the linker.
 
 ## One-time (WSL)
 
-Ubuntu in WSL, Rust via rustup, repo on the Windows drive (here `E:\dev\microduck`
-→ `/mnt/e/dev/microduck`):
+Ubuntu in WSL, Rust via rustup:
 
 ```bash
 sudo apt-get update
@@ -31,12 +30,11 @@ which cargo rustc aarch64-linux-gnu-gcc
 
 ## Build
 
-From WSL, in the clone:
+From WSL, in the repository root:
 
 ```bash
 export PATH="$HOME/.cargo/bin:/usr/bin:/bin"
 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=/usr/bin/aarch64-linux-gnu-gcc
-cd /mnt/e/dev/microduck
 
 cargo build --target aarch64-unknown-linux-gnu -p duck-control \
   --example imu_probe --example hls_read --example hls_control

@@ -78,6 +78,7 @@ export DUCK_LOCAL_DIR="${ENV_LOCAL_DIR}"
 # end of phase 2. It is also the only thing here that is per-board rather than per-session, and an
 # exported name is exactly the kind of thing that is still set when the next board is provisioned.
 NAME=""
+OPERATOR="${SUDO_USER:-root}"
 
 # Path to `team.dev.pub`, to make this a dev board. Usually somewhere under /tmp because it
 # arrived by `scp`, which is why phase 1 copies it somewhere that survives the reboot.
@@ -229,6 +230,7 @@ save_state() {
         # `PROVISION_*` for the two that are not environment knobs, so sourcing this file cannot
         # set something an operator could also have exported.
         kv PROVISION_NAME "$NAME"
+        kv PROVISION_OPERATOR "$OPERATOR"
         kv PROVISION_BOOT_ID "$(boot_id)"
     } > "$STATE"
 }
@@ -252,6 +254,7 @@ load_state() {
     # kept somewhere else to still win. Nothing else writes `PROVISION_NAME`, so a `--name` on the
     # phase 2 command line survives the sourcing and can simply be preferred.
     NAME="${NAME:-${PROVISION_NAME:-}}"
+    OPERATOR="${PROVISION_OPERATOR:-$OPERATOR}"
     return 0
 }
 
@@ -448,6 +451,9 @@ phase_one() {
     fetch setup-board.sh "$tmp"
     DUCK_BOARD_STAGING=1 DUCK_WEIRD_BLE="$WEIRD_BLE" sh "$tmp"
 
+    sh "$DUCK_LOCAL_DIR/scripts/setup-npu.sh" \
+        || warn "NPU setup did not finish; duck detection can use the CPU model"
+
     tmp=/tmp/migrate-network.sh
     fetch migrate-network.sh "$tmp"
     sh "$tmp"
@@ -538,6 +544,7 @@ phase_two() {
     fi
 
     if [ "$SETUP_ONLY" = 1 ]; then
+        sh "$DUCK_LOCAL_DIR/scripts/setup-vision.sh" "$OPERATOR"
         name_the_robot
         finish
         return 0
@@ -553,6 +560,8 @@ phase_two() {
         export DUCK_DEV_KEY
     fi
     sh "$tmp"
+
+    sh "$DUCK_LOCAL_DIR/scripts/setup-vision.sh" "$OPERATOR"
 
     name_the_robot
 
