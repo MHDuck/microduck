@@ -410,7 +410,8 @@ path.write_text(json.dumps(states))
                            ("xh_push.sh", "runtime"), ("speech/sync.sh", "speech")):
             self.write(self.root / path, f'#!/bin/sh\necho "{step} $* ${{XH_BIN_DIR:-}}" >> "$CALLS.steps"\n'
                        f'[ "${{FAIL_STEP:-}}" != {step} ]\n')
-        for path in ("scripts/provision.sh", "deploy/fixture", "dist/fixture", "staged/updaterd"):
+        for path in ("scripts/provision.sh", "deploy/fixture", "dist/fixture", "staged/updaterd",
+                     "vision_follow/serve.py", "mediad/systemd/20-camera-upside-down.conf.example"):
             self.write(self.root / path, "fixture")
         self.write(self.root / "tools/servo-web/package.py", "from pathlib import Path\n"
                    "p=Path(__file__).parent/'dist/servo-web-board.tar.gz'\np.parent.mkdir(exist_ok=True)\np.write_bytes(b'fixture')\n")

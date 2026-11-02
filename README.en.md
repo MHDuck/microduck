@@ -131,6 +131,8 @@ bash scripts/provision-board.sh \
 
 The script builds and packages services from the current checkout, configures the board environment and systemd services, and may reboot the board. `--pause-btd-on-pair` configures gamepad pairing compatibility by pausing `btd` during pairing; `--name Ducky` sets the robot's name. The script prepares signing keys for local builds and keeps the private key outside the repository.
 
+Provisioning also prepares the NPU before reboot, installs the vision module with its own OpenCV environment, and adds the camera's 180-degree correction while retaining zero-copy encoding. Open `http://BOARD_IP:8091/` after installation: `vision-follow.service` starts automatically with ArUco enabled, and the page also supports the MicroDuck detector. Fresh configurations enable duck detection with CPU fallback when the NPU is unavailable. Motion requires manual activation. Existing camera direction settings and calibration files are preserved on reruns.
+
 Additional packages or system libraries may be needed during installation. You can share the specific error with an AI assistant to identify and install missing dependencies, then continue deployment. The [board installation guide](docs/robot/install-dev.md) provides more context; for this fork, follow the commands in this section and the current scripts.
 
 ### 4.4 Upload models and binaries

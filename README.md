@@ -1,8 +1,6 @@
 # Microduck · HD1910 + BNO085
 
-当前开发分支为 **dzh_voice**：基于墨恒master `7caaae8`，保留其任务衔接，增加默认关闭的中文语音输入。
-完整构建、同步板端、键盘/语音测试和合并方式见[迁移部署与测试](docs/dzh_voice_迁移部署与测试.md)。
-不传`--speech`即原master键盘；`--speech on`才开启识别控制，仍须人工Enter起身。
+master 已集成独立视觉功能，支持 ArUco 注视与停走跟随；部署与操作见[视觉模块部署与操作测试](docs/视觉功能_全新WSL与板端部署.md)。
 
 **基于强化学习的小型双足机器人运行时，适配飞特 HD1910 舵机与 I²C BNO085 IMU。**
 
@@ -127,6 +125,8 @@ bash scripts/provision-board.sh \
 若 `.local` 无法解析，直接把最后一项换为实际地址，例如 `radxa@192.168.1.198`。电脑端会安装 mDNS 支持，但 WSL / 路由器是否允许组播仍取决于网络。
 
 脚本完成本地构建、签名打包、板端环境初始化及重启等待、`servo-web` 安装、当前 `robotd` / `mediad` / `padd` / ONNX / 控制脚本 / 配置同步与校验，以及板端语音依赖、音频库和模型检查。已有安装会先备份二进制、模型、脚本和配置到板端 `~/microduck-deploy-backups/before-provision.*/runtime.tar.gz`，再更新；不再需要补跑下一节的命令。`--pause-btd-on-pair` 在手柄配对期间暂停 `btd`；`--name Ducky` 设置机器人名称。
+
+首次安装同时准备 NPU 环境、视觉模块的独立 OpenCV 环境和相机追加 180° 修正（保留零拷贝）。`vision-follow.service` 随系统启动，部署完成后打开 `http://板子IP:8091/`，即可使用 ArUco 识别、注视和前后跟随；网页也可切换 MicroDuck 模型检测，新安装的配置默认开启鸭子检测，NPU 不可用时尝试 CPU 模型。机器人动作仍需人工起身、设置基准并启动，具体操作见[视觉部署与操作测试](docs/视觉功能_全新WSL与板端部署.md)。重跑部署会保留已有相机方向配置和视觉内参。
 
 **会覆盖板端 `/etc/robot/robotd.toml` 并重启 robotd**，板端调好的参数应先同步回仓库。部署使用当前检出的源码与 `policies/` 模型，不自动拉取 Git 或训练新模型。语音安装验证成功后才切换 `~/microduck-speech/current`，默认仍为 `--speech off`；部署不会录音或发起运动测试。语音使用见 [speech/README.md](speech/README.md)。
 

@@ -387,10 +387,9 @@ device = "plughw:CARD=microducki2s3,DEV=0"
 # `mediad`'s pipeline and perception belongs next to the sensor — but the switch lives here because
 # this is the file `robotctl configure` edits and a robot has one place for its settings.
 #
-# **Off by default.** The model ships in the release (models/duck_detect.rknn for the NPU,
-# models/duck_detect.onnx for the CPU), and a robot nobody has asked to look for ducks should not
-# pay ~60 ms of work every half second for it.
-# enabled = true
+# Enabled for visual gaze and follow. The release ships models/duck_detect.rknn for the NPU
+# and models/duck_detect.onnx for the CPU; set false to disable duck detection.
+enabled = true
 
 # Which model, and therefore which processor: a `.rknn` runs on the NPU, an `.onnx` on the CPU.
 # Unset tries the release's own, NPU first — and falls through to the CPU on a board whose NPU is

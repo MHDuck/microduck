@@ -1,0 +1,8 @@
+# Install to /etc/systemd/system/mediad.service.d/20-camera-orientation.conf.
+# Compose with the existing mount angle (normally 90 + 180 -> 270).
+# false: retain zero-copy encoding; consumers apply the common direction metadata.
+# true: physically rotate before the tee; raw detection and encoded pixels are upright.
+# Pixel rotation can significantly increase this board's CPU/encoding load.
+[Service]
+Environment=DUCK_CAMERA_ROTATE_OFFSET=180
+Environment=DUCK_CAMERA_ROTATE_PIXELS=false

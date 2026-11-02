@@ -20,6 +20,7 @@
 # Installs and checks the independent speech environment; recognition stays off.
 # Also installs servo-web from this checkout into ~/microduck/tools/servo-web, without starting it.
 # After provisioning: sudo systemctl restart servo-web (web port 8081; stops the control daemons).
+# Also installs the vision module on port 8091 and the camera's 180-degree correction.
 #
 #   --name NAME       name the robot, at the end of provisioning: `--name Ducky`. Optional —
 #                     without it the board names itself `duck-<four hex>` from its SoC serial,
@@ -690,9 +691,9 @@ python3 "$_root/tools/servo-web/package.py"
 _remote_local="/var/lib/robot/provision-local-$(date +%s)-$$"
 _archive="$(mktemp)"
 if [ -n "$SETUP_ONLY" ]; then
-    tar --exclude=deploy/sysroot -czf "$_archive" -C "$_root" scripts deploy tools/servo-web/dist/servo-web-board.tar.gz
+    tar --exclude=deploy/sysroot --exclude=vision_follow/.venv --exclude=vision_follow/__pycache__ -czf "$_archive" -C "$_root" scripts deploy vision_follow mediad/systemd/20-camera-upside-down.conf.example tools/servo-web/dist/servo-web-board.tar.gz
 else
-    tar --exclude=deploy/sysroot -czf "$_archive" -C "$_root" scripts deploy dist staged/updaterd tools/servo-web/dist/servo-web-board.tar.gz
+    tar --exclude=deploy/sysroot --exclude=vision_follow/.venv --exclude=vision_follow/__pycache__ -czf "$_archive" -C "$_root" scripts deploy vision_follow mediad/systemd/20-camera-upside-down.conf.example dist staged/updaterd tools/servo-web/dist/servo-web-board.tar.gz
 fi
 scp -q "$_archive" "$(scp_target /tmp/microduck-local.tar.gz)" || die "could not copy local payload"
 rm -f "$_archive"
@@ -911,9 +912,12 @@ say "installing this checkout's robotd, mediad, padd, configuration, models and 
 XH_BIN_DIR="$_root/staged" sh "$_root/xh_push.sh" "$HOST"
 say "installing speech dependencies and verifying the model on the board"
 sh "$_root/speech/sync.sh" --install "$HOST"
-say "provisioning finished; speech is installed, keyboard default remains --speech off"
+rsh "systemctl is-active --quiet vision-follow.service && curl -fsS http://127.0.0.1:8091/config.json >/dev/null" \
+    || die "vision-follow is not ready; check: sudo journalctl -u vision-follow -b"
+say "provisioning finished; speech and vision are installed, keyboard default remains --speech off"
 say "servo-web is installed; to debug, support the robot and run: sudo systemctl restart servo-web"
 say "servo-web listens on port 8081; starting it stops padd, mediad, robotd and tofd"
+say "vision is ready: http://${HOST_ONLY}:8091/ — preview first, then start control manually"
 
 # The health report is the point of all of it, and it is also the thing most likely to have
 # something to say — a bench board with no servos powered reports unhealthy, correctly.
