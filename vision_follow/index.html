@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MicroDuck · 视觉注视与跟随</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#101923;color:#edf3fa;font:16px/1.6 system-ui,sans-serif}main{max-width:1280px;margin:auto;padding:24px}h1{font-size:27px;margin:0 0 5px}.muted{color:#adbdcc}section{background:#1a2938;border:1px solid #34495e;border-radius:12px;padding:18px;margin-top:16px}.layout{display:grid;grid-template-columns:minmax(280px,1.4fr) minmax(320px,1fr);gap:18px}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}button,input,select{font:inherit;border:1px solid #6c849b;border-radius:6px;padding:8px;background:#263c50;color:inherit}button{cursor:pointer}button:disabled{opacity:.4;cursor:default}.primary{background:#177b68}.stop{background:#a12f38}input[type=number]{width:95px}input[type=checkbox]{width:20px;height:20px}label{display:inline-flex;gap:8px;align-items:center;margin:5px 0}#box{position:relative;container-type:size;aspect-ratio:16/9;width:100%;margin:auto;background:#080e14;overflow:hidden}#box video{position:absolute;left:50%;top:50%;width:100%;height:100%;transform:translate(-50%,-50%);object-fit:fill}#box video.turn90,#box video.turn270{width:100cqh;height:100cqw}#box video.turn90{transform:translate(-50%,-50%) rotate(90deg)}#box video.turn270{transform:translate(-50%,-50%) rotate(-90deg)}#box video.turn180{transform:translate(-50%,-50%) rotate(180deg)}svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}svg rect{fill:none;stroke:#42e8ad;stroke-width:3;vector-effect:non-scaling-stroke}svg line{stroke:#e9f0f5;stroke-width:1;vector-effect:non-scaling-stroke}#status{font-size:21px;font-weight:600;color:#7de9cc}#metrics{white-space:pre-line;font-family:ui-monospace,monospace;font-size:14px}#log{height:200px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#0c141e;padding:12px;font:13px/1.6 ui-monospace,monospace}details{margin:12px 0}.field{display:flex;justify-content:space-between;gap:10px}@media(max-width:800px){.layout{grid-template-columns:1fr}main{padding:12px}}
+</style></head><body><main>
+<h1>MicroDuck · 看见同伴</h1><div class="muted">独立演示模块 ｜ 默认预览 ｜ 转头注视 / 可选前后跟随</div>
+<section class="row"><button id="connect" class="primary">连接摄像头</button><button id="disconnect" disabled>断开连接</button><span id="connection">未连接</span></section>
+<div class="layout"><section><div id="box"><video id="video" autoplay muted playsinline></video><svg id="overlay"></svg></div><p id="status">仅预览，不发送控制指令</p><div id="metrics">等待检测数据</div></section>
+<section>
+<p>先确认目标检测正常，再起身、启动。只开一个控制页面；退出键盘程序并停止手柄输入。</p>
+<p><label>检测目标 <select id="detector"><option value="duck">MicroDuck 模型</option><option value="aruco">ArUco · DICT_5X5_50</option></select></label></p>
+<div class="field"><label for="markerId">追踪 ArUco ID</label><input id="markerId" type="number" min="0" max="49" step="1" value="0"></div>
+<div id="arucoInfo" class="muted">ArUco 需要独立 OpenCV 环境，以 --detector aruco 启动</div>
+<div id="arucoTiming" class="muted">ArUco 耗时：等待检测</div>
+<div id="videoSummary" class="muted">视频链路：等待连接</div>
+<label><input id="previewDetection" type="checkbox" disabled>仅预览时启用 ArUco 识别（不控制机器人）</label>
+<div id="detectionState" class="muted">识别状态：未连接</div>
+<div class="muted">启动注视/跟随后自动使用识别，不改变此开关；取消勾选不停止控制。动作启停请使用“启动注视/跟随”和“停止控制”。</div>
+<p id="healthSummary" class="muted">机器人 / IMU 状态：待连接</p>
+<button id="diagnose" disabled>检查机器人状态（只读）</button>
+<button id="resumeVideo">恢复视频播放（不启动控制）</button>
+<div class="row"><button id="enable" disabled>起身使能</button><button id="start" class="primary" disabled>启动注视</button><button id="stop" class="stop" disabled>停止控制 [空格]</button></div>
+<p><label>控制方式 <select id="mode"><option value="gaze">原地转头注视（默认）</option><option value="follow">转头＋前后跟随</option></select></label></p>
+<p><label>行走跟随方式 <select id="followStyle"><option value="step">停走式（ArUco）</option><option value="continuous">连续式（原方案）</option></select></label></p>
+<div class="field"><label for="moveSeconds">每段行走时间 s（含起步）</label><input id="moveSeconds" type="number" min="0.2" max="4" step="0.1" value="2.5"></div>
+<div class="field"><label for="settleSeconds">停步稳定等待 s</label><input id="settleSeconds" type="number" min="0.3" max="5" step="0.1" value="1"></div>
+<p><label>跟随依据 <select id="distanceMode"><option value="size">图像相对大小</option><option id="metricOption" value="meters">相机到码的距离（米，需标定）</option></select></label></p>
+<div class="field"><label for="targetDistance">期望距离 m</label><input id="targetDistance" type="number" min="0.2" max="3" step="0.05" value="0.60"></div>
+<div class="field"><label for="targetSize">期望目标尺寸 / 画面高度</label><input id="targetSize" type="number" min="0.01" max="0.85" step="0.01" value="0.40"></div>
+<button id="calibrate" disabled>将当前距离设为跟随距离</button>
+<div class="field"><label for="forward">前进上限 m/s</label><input id="forward" type="number" min="0" max="0.25" step="0.01" value="0.12"></div>
+<div class="field"><label for="backward">后退上限 m/s</label><input id="backward" type="number" min="0" max="0.25" step="0.01" value="0.10"></div>
+<label><input id="vertical" type="checkbox">同时上下看（默认只左右看）</label>
+<details><summary>高级参数与方向校正</summary>
+<label><input id="requireFront" type="checkbox">停走式仅在目标位于正前方时行走（默认关闭）</label>
+<div class="field"><label for="detectionHz">检测频率上限 Hz</label><input id="detectionHz" type="number" min="0.1" max="5" step="0.1" value="0.5"></div>
+<div class="field"><label for="detectionMaxAge">检测结果最大延迟 s</label><input id="detectionMaxAge" type="number" min="0.8" max="15" step="0.5" value="5"></div>
+<div class="field"><label for="httpTimeout">检测 HTTP 等待 s</label><input id="httpTimeout" type="number" min="2" max="30" step="1" value="8"></div>
+<div class="field"><label for="targetTimeout">目标保留时间 s</label><input id="targetTimeout" type="number" min="0.6" max="60" step="1" value="12"></div>
+<div class="field"><label for="videoTimeout">视频无新帧期限 s</label><input id="videoTimeout" type="number" min="1.5" max="30" step="1" value="10"></div>
+<label><input id="invertYaw" type="checkbox">反转左右纠偏方向</label><br><label><input id="invertPitch" type="checkbox">反转上下纠偏方向</label>
+<p class="muted">修改参数会先停止控制，需重新启动。左右角度限制 ±34°，上下 ±20°；不控制机身转弯。米制距离需实测码边长及相机内参；未标定可选相对大小。</p></details>
+<p class="muted">停走式：停步识别 → 行走一段（默认2.5秒）→ 再停步识别。约0.4秒达到默认前进速度，其余时间持续行走。默认不因头部/目标偏侧取消行走，仍只前进或后退，不自动转弯。移动中不上传检测帧，旧结果不能重复执行。头部限速/限幅、视频、IMU和连接检查保留；停止不卸力。</p>
+<div class="row"><button id="download">下载演示日志</button><button id="snapshot" disabled>保存原始标定照片</button></div>
+</section></div>
+<section><strong>运行记录</strong><div id="log" role="log"></div></section>
+</main><script src="core.js"></script><script src="aruco_client.js"></script><script src="app.js"></script></body></html>
